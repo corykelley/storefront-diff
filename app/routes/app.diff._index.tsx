@@ -7,6 +7,7 @@ import {
   useFetcher,
   useLoaderData,
   useNavigation,
+  useRevalidator,
 } from "@remix-run/react";
 import {
   Banner,
@@ -15,12 +16,14 @@ import {
   Card,
   InlineStack,
   Layout,
+  Modal,
   Page,
   Select,
   Text,
 } from "@shopify/polaris";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { authenticate } from "~/shopify.server";
+import { notify } from "~/components/Notification";
 import { listThemes } from "~/lib/shopify-api.server";
 import { enqueueDiffJob } from "~/lib/queue.server";
 import prisma from "~/db.server";
@@ -115,7 +118,55 @@ export default function DiffPage() {
   const { themes, recentRuns } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
+  const revalidator = useRevalidator();
   const isSubmitting = navigation.state === "submitting";
+
+  // Track which runs are in-progress so we can detect completions
+  const hasActiveRuns = recentRuns.some(
+    (r: any) => r.status === "queued" || r.status === "running",
+  );
+
+  // Poll every 3s while any run is queued or running
+  useEffect(() => {
+    if (!hasActiveRuns) return;
+    const interval = setInterval(() => {
+      revalidator.revalidate();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [hasActiveRuns, revalidator]);
+
+  // Toast when a run finishes (transitions out of queued/running)
+  const prevActiveIdsRef = useRef<Set<string>>(
+    new Set(
+      recentRuns
+        .filter((r: any) => r.status === "queued" || r.status === "running")
+        .map((r: any) => r.id),
+    ),
+  );
+  useEffect(() => {
+    const currentActiveIds = new Set(
+      recentRuns
+        .filter((r: any) => r.status === "queued" || r.status === "running")
+        .map((r: any) => r.id),
+    );
+
+    // Check if any previously-active run is no longer active
+    for (const id of prevActiveIdsRef.current) {
+      if (!currentActiveIds.has(id)) {
+        const run = recentRuns.find((r: any) => r.id === id);
+        if (run) {
+          const label = `${run.baseThemeName} → ${run.candidateThemeName}`;
+          if (run.status === "complete") {
+            notify(`Diff complete: ${label}`);
+          } else if (run.status === "failed") {
+            notify(`Diff failed: ${label}`, { tone: "error" });
+          }
+        }
+      }
+    }
+
+    prevActiveIdsRef.current = currentActiveIds;
+  }, [recentRuns]);
 
   // Find the main theme to set as default base
   const mainTheme = themes.find((t: any) => t.role === "main");
@@ -236,36 +287,78 @@ export default function DiffPage() {
 function RunRow({ run }: { run: any }) {
   const fetcher = useFetcher();
   const isDeleting = fetcher.state !== "idle";
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  const openConfirm = useCallback(() => setShowConfirm(true), []);
+  const closeConfirm = useCallback(() => setShowConfirm(false), []);
+
+  const handleDelete = useCallback(() => {
+    fetcher.submit(
+      { intent: "delete", runId: run.id },
+      { method: "post" },
+    );
+    setShowConfirm(false);
+  }, [fetcher, run.id]);
+
+  // Show toast when delete succeeds
+  useEffect(() => {
+    if ((fetcher.data as any)?.deleted) {
+      notify("Run deleted");
+    }
+  }, [fetcher.data]);
 
   return (
-    <Card key={run.id}>
-      <InlineStack align="space-between" blockAlign="center">
-        <BlockStack gap="100">
-          <Text as="p" variant="bodyMd" fontWeight="semibold">
-            {run.baseThemeName} → {run.candidateThemeName}
-          </Text>
-          <Text as="p" variant="bodySm" tone="subdued">
-            {new Date(run.createdAt).toLocaleString()} —{" "}
-            <StatusLabel status={run.status} />
-          </Text>
-        </BlockStack>
-        <InlineStack gap="200">
-          <Link to={`/app/diff/${run.id}`}>View</Link>
-          <fetcher.Form method="post">
-            <input type="hidden" name="intent" value="delete" />
-            <input type="hidden" name="runId" value={run.id} />
+    <>
+      <Card key={run.id}>
+        <InlineStack align="space-between" blockAlign="center">
+          <BlockStack gap="100">
+            <Text as="p" variant="bodyMd" fontWeight="semibold">
+              {run.baseThemeName} → {run.candidateThemeName}
+            </Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              {new Date(run.createdAt).toLocaleString()} —{" "}
+              <StatusLabel status={run.status} />
+            </Text>
+          </BlockStack>
+          <InlineStack gap="200">
+            <Link to={`/app/diff/${run.id}`}>View</Link>
             <Button
               variant="plain"
               tone="critical"
-              submit
+              onClick={openConfirm}
               loading={isDeleting}
             >
               Delete
             </Button>
-          </fetcher.Form>
+          </InlineStack>
         </InlineStack>
-      </InlineStack>
-    </Card>
+      </Card>
+
+      <Modal
+        open={showConfirm}
+        onClose={closeConfirm}
+        title="Delete diff run?"
+        primaryAction={{
+          content: "Delete",
+          destructive: true,
+          onAction: handleDelete,
+        }}
+        secondaryActions={[
+          {
+            content: "Cancel",
+            onAction: closeConfirm,
+          },
+        ]}
+      >
+        <Modal.Section>
+          <Text as="p">
+            Are you sure you want to delete the diff run{" "}
+            <strong>{run.baseThemeName} → {run.candidateThemeName}</strong>?
+            This will permanently remove all screenshots and results.
+          </Text>
+        </Modal.Section>
+      </Modal>
+    </>
   );
 }
 

@@ -5,6 +5,7 @@ import { AppProvider } from "@shopify/shopify-app-remix/react";
 import { NavMenu } from "@shopify/app-bridge-react";
 import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
 import { authenticate } from "~/shopify.server";
+import { NotificationHost } from "~/components/Notification";
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 
@@ -24,6 +25,7 @@ export default function App() {
         <Link to="/app/settings">Settings</Link>
       </NavMenu>
       <Outlet />
+      <NotificationHost />
     </AppProvider>
   );
 }

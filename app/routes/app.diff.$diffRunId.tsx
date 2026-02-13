@@ -19,14 +19,16 @@ import {
   Divider,
   InlineStack,
   Layout,
+  Modal,
   Page,
   ProgressBar,
   Spinner,
   Tabs,
   Text,
 } from "@shopify/polaris";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { authenticate } from "~/shopify.server";
+import { notify } from "~/components/Notification";
 import prisma from "~/db.server";
 
 // ── Loader ───────────────────────────────────────────────────────────
@@ -76,10 +78,12 @@ export default function DiffRunPage() {
   const revalidator = useRevalidator();
   const navigate = useNavigate();
   const [selectedTab, setSelectedTab] = useState(0);
+  const [zoomTarget, setZoomTarget] = useState<PageTargetData | null>(null);
 
   const isInProgress =
     diffRun.status === "queued" || diffRun.status === "running";
 
+  // Poll while in progress
   useEffect(() => {
     if (!isInProgress) return;
     const interval = setInterval(() => {
@@ -87,6 +91,15 @@ export default function DiffRunPage() {
     }, 2000);
     return () => clearInterval(interval);
   }, [isInProgress, revalidator]);
+
+  // Toast when diff completes
+  const wasInProgressRef = useRef(isInProgress);
+  useEffect(() => {
+    if (wasInProgressRef.current && !isInProgress) {
+      notify("Diff check complete");
+    }
+    wasInProgressRef.current = isInProgress;
+  }, [isInProgress]);
 
   const summary = (diffRun.summary as any) || {};
   const pageTargets = diffRun.pageTargets ?? [];
@@ -164,7 +177,7 @@ export default function DiffRunPage() {
               <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
                 <Box padding="400">
                   {selectedTab === 0 && <FilesTab assetDiffs={diffRun.assetDiffs} />}
-                  {selectedTab === 1 && <VisualTab pageTargets={pageTargets} />}
+                  {selectedTab === 1 && <VisualTab pageTargets={pageTargets} onZoom={setZoomTarget} />}
                   {selectedTab === 2 && <ChecksTab pageTargets={pageTargets} />}
                 </Box>
               </Tabs>
@@ -172,6 +185,12 @@ export default function DiffRunPage() {
           </Layout.Section>
         )}
       </Layout>
+
+      {/* Screenshot zoom modal */}
+      <ScreenshotZoomModal
+        target={zoomTarget}
+        onClose={() => setZoomTarget(null)}
+      />
     </Page>
   );
 }
@@ -221,7 +240,13 @@ function FilesTab({ assetDiffs }: { assetDiffs: AssetDiffRow[] }) {
 
 // ── Visual Tab ───────────────────────────────────────────────────────
 
-function VisualTab({ pageTargets }: { pageTargets: PageTargetData[] }) {
+function VisualTab({
+  pageTargets,
+  onZoom,
+}: {
+  pageTargets: PageTargetData[];
+  onZoom: (target: PageTargetData) => void;
+}) {
   if (pageTargets.length === 0) {
     return <Text as="p" tone="subdued">No visual comparisons available.</Text>;
   }
@@ -229,16 +254,24 @@ function VisualTab({ pageTargets }: { pageTargets: PageTargetData[] }) {
   return (
     <BlockStack gap="600">
       {pageTargets.map((target) => (
-        <PageTargetVisual key={target.id} target={target} />
+        <PageTargetVisual key={target.id} target={target} onZoom={onZoom} />
       ))}
     </BlockStack>
   );
 }
 
-function PageTargetVisual({ target }: { target: PageTargetData }) {
+function PageTargetVisual({
+  target,
+  onZoom,
+}: {
+  target: PageTargetData;
+  onZoom: (target: PageTargetData) => void;
+}) {
   const baseScreenshot = target.screenshots.find((s) => s.variant === "base");
   const candidateScreenshot = target.screenshots.find((s) => s.variant === "candidate");
   const visualDiff = target.visualDiffs[0];
+
+  const handleZoom = useCallback(() => onZoom(target), [onZoom, target]);
 
   return (
     <BlockStack gap="300">
@@ -269,12 +302,14 @@ function PageTargetVisual({ target }: { target: PageTargetData }) {
           <ScreenshotColumn
             label="Base"
             screenshot={baseScreenshot}
+            onClick={handleZoom}
           />
           <ScreenshotColumn
             label="Candidate"
             screenshot={candidateScreenshot}
+            onClick={handleZoom}
           />
-          <DiffColumn label="Diff" visualDiff={visualDiff} />
+          <DiffColumn label="Diff" visualDiff={visualDiff} onClick={handleZoom} />
         </div>
       )}
 
@@ -286,9 +321,11 @@ function PageTargetVisual({ target }: { target: PageTargetData }) {
 function ScreenshotColumn({
   label,
   screenshot,
+  onClick,
 }: {
   label: string;
   screenshot?: ScreenshotData;
+  onClick?: () => void;
 }) {
   return (
     <BlockStack gap="200">
@@ -299,7 +336,15 @@ function ScreenshotColumn({
         <img
           src={`/${screenshot.filePath}`}
           alt={`${label} screenshot`}
-          style={{ width: "100%", border: "1px solid var(--p-color-border)" }}
+          role="button"
+          tabIndex={0}
+          onClick={onClick}
+          onKeyDown={(e) => { if (e.key === "Enter") onClick?.(); }}
+          style={{
+            width: "100%",
+            border: "1px solid var(--p-color-border)",
+            cursor: "pointer",
+          }}
         />
       ) : (
         <Text as="p" tone="subdued">No screenshot</Text>
@@ -311,9 +356,11 @@ function ScreenshotColumn({
 function DiffColumn({
   label,
   visualDiff,
+  onClick,
 }: {
   label: string;
   visualDiff?: VisualDiffData;
+  onClick?: () => void;
 }) {
   return (
     <BlockStack gap="200">
@@ -324,7 +371,15 @@ function DiffColumn({
         <img
           src={`/${visualDiff.diffFilePath}`}
           alt="Visual diff"
-          style={{ width: "100%", border: "1px solid var(--p-color-border)" }}
+          role="button"
+          tabIndex={0}
+          onClick={onClick}
+          onKeyDown={(e) => { if (e.key === "Enter") onClick?.(); }}
+          style={{
+            width: "100%",
+            border: "1px solid var(--p-color-border)",
+            cursor: "pointer",
+          }}
         />
       ) : (
         <Text as="p" tone="subdued">No diff</Text>
@@ -505,6 +560,76 @@ function DiffFileRow({
   );
 }
 
+// ── Screenshot Zoom Modal ────────────────────────────────────────────
+
+function ScreenshotZoomModal({
+  target,
+  onClose,
+}: {
+  target: PageTargetData | null;
+  onClose: () => void;
+}) {
+  const [activeView, setActiveView] = useState(0);
+
+  if (!target) return null;
+
+  const baseScreenshot = target.screenshots.find((s) => s.variant === "base");
+  const candidateScreenshot = target.screenshots.find((s) => s.variant === "candidate");
+  const visualDiff = target.visualDiffs[0];
+
+  const mismatchLabel = visualDiff
+    ? `${visualDiff.mismatchPercent}% mismatch`
+    : "";
+
+  const views = [
+    { id: "base", content: "Base" },
+    { id: "candidate", content: "Candidate" },
+    { id: "diff", content: "Diff" },
+  ];
+
+  const imageSrc =
+    activeView === 0
+      ? baseScreenshot ? `/${baseScreenshot.filePath}` : null
+      : activeView === 1
+        ? candidateScreenshot ? `/${candidateScreenshot.filePath}` : null
+        : visualDiff ? `/${visualDiff.diffFilePath}` : null;
+
+  const imageAlt =
+    activeView === 0 ? "Base screenshot"
+      : activeView === 1 ? "Candidate screenshot"
+        : "Visual diff";
+
+  return (
+    <Modal
+      open={true}
+      onClose={onClose}
+      title={`${target.pageType.toUpperCase()} — ${target.path}${mismatchLabel ? ` (${mismatchLabel})` : ""}`}
+      size="large"
+    >
+      <Modal.Section>
+        <BlockStack gap="400">
+          <Tabs tabs={views} selected={activeView} onSelect={setActiveView} />
+          <div style={{ overflow: "auto", maxHeight: "75vh" }}>
+            {imageSrc ? (
+              <img
+                src={imageSrc}
+                alt={imageAlt}
+                style={{
+                  width: "100%",
+                  display: "block",
+                  border: "1px solid var(--p-color-border)",
+                }}
+              />
+            ) : (
+              <Text as="p" tone="subdued">No image available</Text>
+            )}
+          </div>
+        </BlockStack>
+      </Modal.Section>
+    </Modal>
+  );
+}
+
 // ── Types ────────────────────────────────────────────────────────────
 
 interface ScreenshotData {
@@ -521,6 +646,7 @@ interface VisualDiffData {
   mismatchCount: number;
   mismatchPercent: number;
   totalPixels: number;
+  effectivePixels: number;
 }
 
 interface CheckResultData {

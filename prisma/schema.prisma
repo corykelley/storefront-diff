@@ -100,7 +100,8 @@ model VisualDiff {
   diffFilePath    String
   mismatchCount   Int
   mismatchPercent Float      // 0.0–100.0
-  totalPixels     Int
+  totalPixels     Int        // full padded canvas pixels
+  effectivePixels Int        @default(0) // overlapping region pixels (used as denominator)
   createdAt       DateTime   @default(now())
 }
 
