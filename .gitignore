@@ -4,3 +4,4 @@ build/
 .cache/
 *.log
 .DS_Store
+public/runs/

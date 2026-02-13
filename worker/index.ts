@@ -1,14 +1,11 @@
 /**
- * BullMQ Worker — runs as a separate process.
+ * BullMQ Worker — orchestrator process.
  *
- * Processes theme-diff jobs:
- *   1. Read DiffRun from DB
- *   2. Get shop access token from Session table
- *   3. List assets for both themes
- *   4. Categorize added / removed / common
- *   5. For common text assets: fetch content, hash, diff if modified
- *   6. Store AssetDiff rows
- *   7. Update DiffRun status + summary
+ * Pipeline phases:
+ *   1. Asset diffs (V1 logic)
+ *   2. Page target resolution
+ *   3. Per-target: screenshots → DOM checks → visual diff
+ *   4. Finalize summary
  */
 
 import { Worker, Job } from "bullmq";
@@ -16,12 +13,17 @@ import { PrismaClient } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { createTwoFilesPatch } from "diff";
 
+import { shopifyFetch, sleep } from "./shopifyFetch.js";
+import { resolvePageTargets, buildPreviewUrl, createPageTargetRecords } from "./pageTargets.js";
+import { capturePageTargetScreenshots, closeBrowser } from "./screenshots.js";
+import { generateVisualDiff } from "./visualDiff.js";
+import { runChecksOnPage, persistCheckResults } from "./checks.js";
+import { createStorageProvider } from "./storage.js";
+import type { PipelineContext } from "./types.js";
+
 // ── Config ───────────────────────────────────────────────────────────
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
-const API_VERSION = "2024-10";
-const MAX_RETRIES = 5;
-const INITIAL_BACKOFF_MS = 2000;
 const MAX_ASSET_SIZE = 500 * 1024; // 500 KB
 const THROTTLE_MS = 550; // ~2 requests/sec to stay under Shopify REST rate limit
 
@@ -51,58 +53,6 @@ function sha256(content: string): string {
   return createHash("sha256").update(content, "utf-8").digest("hex");
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function backoff(attempt: number): number {
-  const base = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
-  return base + Math.random() * base * 0.3;
-}
-
-// ── Shopify REST fetcher with 429 retry ──────────────────────────────
-
-async function shopifyFetch<T>(
-  shop: string,
-  accessToken: string,
-  path: string
-): Promise<T> {
-  const url = `https://${shop}/admin/api/${API_VERSION}/${path}`;
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const res = await fetch(url, {
-      headers: {
-        "X-Shopify-Access-Token": accessToken,
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (res.status === 429) {
-      if (attempt === MAX_RETRIES) {
-        throw new Error(`Rate limited after ${MAX_RETRIES} retries: ${path}`);
-      }
-      const retryAfter = res.headers.get("Retry-After");
-      const waitMs = retryAfter ? Number(retryAfter) * 1000 : backoff(attempt);
-      console.warn(
-        `[worker] 429 on ${path} — retry in ${Math.round(waitMs)}ms (${attempt + 1}/${MAX_RETRIES})`
-      );
-      await sleep(waitMs);
-      continue;
-    }
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(
-        `Shopify API ${res.status} on ${path}: ${body.slice(0, 300)}`
-      );
-    }
-
-    return (await res.json()) as T;
-  }
-
-  throw new Error("Exhausted retries");
-}
-
 // ── Types ────────────────────────────────────────────────────────────
 
 interface AssetListItem {
@@ -117,229 +67,290 @@ interface AssetDetail {
   attachment?: string;
 }
 
-// ── Core diff logic ──────────────────────────────────────────────────
+// ── Phase 1: Asset Diffs (extracted V1 logic) ────────────────────────
+
+async function runAssetDiffs(
+  ctx: PipelineContext,
+): Promise<{ added: number; removed: number; modified: number; skipped: number }> {
+  const [baseAssets, candidateAssets] = await Promise.all([
+    shopifyFetch<{ assets: AssetListItem[] }>(
+      ctx.shopDomain,
+      ctx.accessToken,
+      `themes/${ctx.baseThemeId}/assets.json`,
+    ).then((r) => r.assets),
+    shopifyFetch<{ assets: AssetListItem[] }>(
+      ctx.shopDomain,
+      ctx.accessToken,
+      `themes/${ctx.candidateThemeId}/assets.json`,
+    ).then((r) => r.assets),
+  ]);
+
+  const baseKeySet = new Set(baseAssets.map((a) => a.key));
+  const candidateKeySet = new Set(candidateAssets.map((a) => a.key));
+
+  const added: string[] = [];
+  const removed: string[] = [];
+  const common: string[] = [];
+
+  for (const key of candidateKeySet) {
+    if (!baseKeySet.has(key)) added.push(key);
+  }
+  for (const key of baseKeySet) {
+    if (!candidateKeySet.has(key)) removed.push(key);
+    else common.push(key);
+  }
+
+  const diffRows: Array<{
+    diffRunId: string;
+    key: string;
+    changeType: string;
+    diffText: string | null;
+  }> = [];
+
+  for (const key of added) {
+    diffRows.push({ diffRunId: ctx.diffRunId, key, changeType: "added", diffText: null });
+  }
+  for (const key of removed) {
+    diffRows.push({ diffRunId: ctx.diffRunId, key, changeType: "removed", diffText: null });
+  }
+
+  let modifiedCount = 0;
+  let skippedCount = 0;
+
+  for (let i = 0; i < common.length; i++) {
+    const key = common[i];
+
+    if (isBinary(key)) {
+      diffRows.push({ diffRunId: ctx.diffRunId, key, changeType: "binary-skipped", diffText: null });
+      skippedCount++;
+      continue;
+    }
+
+    let baseAsset: AssetDetail;
+    let candidateAsset: AssetDetail;
+
+    try {
+      baseAsset = await shopifyFetch<{ asset: AssetDetail }>(
+        ctx.shopDomain,
+        ctx.accessToken,
+        `themes/${ctx.baseThemeId}/assets.json?asset[key]=${encodeURIComponent(key)}`,
+      ).then((r) => r.asset);
+
+      await sleep(THROTTLE_MS);
+
+      candidateAsset = await shopifyFetch<{ asset: AssetDetail }>(
+        ctx.shopDomain,
+        ctx.accessToken,
+        `themes/${ctx.candidateThemeId}/assets.json?asset[key]=${encodeURIComponent(key)}`,
+      ).then((r) => r.asset);
+
+      await sleep(THROTTLE_MS);
+    } catch (err) {
+      console.error(`[worker] Failed to fetch asset ${key}:`, (err as Error).message);
+      diffRows.push({
+        diffRunId: ctx.diffRunId,
+        key,
+        changeType: "large-file-skipped",
+        diffText: `Error fetching: ${(err as Error).message}`,
+      });
+      skippedCount++;
+      continue;
+    }
+
+    if (i % 10 === 0) {
+      console.log(`[worker] Progress: ${i}/${common.length} common assets compared`);
+    }
+
+    const baseContent = baseAsset.value ?? "";
+    const candidateContent = candidateAsset.value ?? "";
+
+    if (
+      Buffer.byteLength(baseContent, "utf-8") > MAX_ASSET_SIZE ||
+      Buffer.byteLength(candidateContent, "utf-8") > MAX_ASSET_SIZE
+    ) {
+      diffRows.push({ diffRunId: ctx.diffRunId, key, changeType: "large-file-skipped", diffText: null });
+      skippedCount++;
+      continue;
+    }
+
+    const baseHash = sha256(baseContent);
+    const candidateHash = sha256(candidateContent);
+
+    if (baseHash === candidateHash) continue;
+
+    const patch = createTwoFilesPatch(
+      `base/${key}`,
+      `candidate/${key}`,
+      baseContent,
+      candidateContent,
+      undefined,
+      undefined,
+      { context: 3 },
+    );
+
+    diffRows.push({ diffRunId: ctx.diffRunId, key, changeType: "modified", diffText: patch });
+    modifiedCount++;
+  }
+
+  if (diffRows.length > 0) {
+    await ctx.prisma.assetDiff.createMany({ data: diffRows });
+  }
+
+  return { added: added.length, removed: removed.length, modified: modifiedCount, skipped: skippedCount };
+}
+
+// ── Main job processor ───────────────────────────────────────────────
 
 async function processDiffJob(job: Job<{ diffRunId: string }>) {
   const { diffRunId } = job.data;
   console.log(`[worker] Processing diff job: ${diffRunId}`);
 
-  // 1. Load DiffRun
   const diffRun = await prisma.diffRun.findUnique({ where: { id: diffRunId } });
-  if (!diffRun) {
-    throw new Error(`DiffRun ${diffRunId} not found`);
-  }
+  if (!diffRun) throw new Error(`DiffRun ${diffRunId} not found`);
 
-  // 2. Get access token from Shop table (populated by afterAuth hook)
   const shop = await prisma.shop.findUnique({
     where: { shopDomain: diffRun.shopDomain },
   });
-  if (!shop) {
-    throw new Error(`Shop ${diffRun.shopDomain} not found — has the app been installed?`);
-  }
-  const accessToken = shop.accessToken;
+  if (!shop) throw new Error(`Shop ${diffRun.shopDomain} not found — has the app been installed?`);
 
-  // Mark as running
   await prisma.diffRun.update({
     where: { id: diffRunId },
     data: { status: "running" },
   });
 
+  const ctx: PipelineContext = {
+    diffRunId,
+    shopDomain: diffRun.shopDomain,
+    accessToken: shop.accessToken,
+    baseThemeId: diffRun.baseThemeId,
+    candidateThemeId: diffRun.candidateThemeId,
+    prisma,
+  };
+
   try {
-    // 3. List assets for both themes
-    const [baseAssets, candidateAssets] = await Promise.all([
-      shopifyFetch<{ assets: AssetListItem[] }>(
-        diffRun.shopDomain,
-        accessToken,
-        `themes/${diffRun.baseThemeId}/assets.json`
-      ).then((r) => r.assets),
-      shopifyFetch<{ assets: AssetListItem[] }>(
-        diffRun.shopDomain,
-        accessToken,
-        `themes/${diffRun.candidateThemeId}/assets.json`
-      ).then((r) => r.assets),
-    ]);
+    // ── Phase 1: Asset Diffs ──
+    console.log("[worker] Phase 1: Asset diffs");
+    const assetResult = await runAssetDiffs(ctx);
+    console.log(`[worker] Asset diffs done: +${assetResult.added} -${assetResult.removed} ~${assetResult.modified}`);
 
-    const baseKeySet = new Set(baseAssets.map((a) => a.key));
-    const candidateKeySet = new Set(candidateAssets.map((a) => a.key));
+    // ── Phase 2: Page Target Resolution ──
+    console.log("[worker] Phase 2: Resolving page targets");
+    const targetDefs = await resolvePageTargets(ctx);
+    const targetIds = await createPageTargetRecords(ctx, targetDefs);
+    console.log(`[worker] Created ${targetIds.length} page targets`);
 
-    // 4. Categorize
-    const added: string[] = [];
-    const removed: string[] = [];
-    const common: string[] = [];
+    // Load shop settings
+    const settings = await prisma.shopSetting.findUnique({
+      where: { shopDomain: diffRun.shopDomain },
+    });
+    const storefrontPassword = settings?.storefrontPassword ?? null;
+    const hideSelectors = settings?.hideSelectors ?? null;
 
-    for (const key of candidateKeySet) {
-      if (!baseKeySet.has(key)) added.push(key);
-    }
-    for (const key of baseKeySet) {
-      if (!candidateKeySet.has(key)) removed.push(key);
-      else common.push(key);
-    }
+    const storage = createStorageProvider();
 
-    // 5. Prepare AssetDiff rows to insert
-    const diffRows: Array<{
-      diffRunId: string;
-      key: string;
-      changeType: string;
-      diffText: string | null;
-    }> = [];
+    // ── Phase 3: Per-target processing ──
+    console.log("[worker] Phase 3: Processing page targets");
+    let screenshotsComplete = 0;
+    let screenshotsFailed = 0;
+    let maxMismatchPercent = 0;
+    const allRegressions: Array<{ checkName: string; pageType: string }> = [];
 
-    // Added
-    for (const key of added) {
-      diffRows.push({ diffRunId, key, changeType: "added", diffText: null });
-    }
-
-    // Removed
-    for (const key of removed) {
-      diffRows.push({ diffRunId, key, changeType: "removed", diffText: null });
-    }
-
-    // Common — need to compare content
-    let modifiedCount = 0;
-    let skippedCount = 0;
-
-    for (let i = 0; i < common.length; i++) {
-      const key = common[i];
-
-      // Skip binary assets
-      if (isBinary(key)) {
-        diffRows.push({
-          diffRunId,
-          key,
-          changeType: "binary-skipped",
-          diffText: null,
-        });
-        skippedCount++;
-        continue;
-      }
-
-      // Fetch content SEQUENTIALLY with throttle to avoid 429s
-      let baseAsset: AssetDetail;
-      let candidateAsset: AssetDetail;
+    for (let i = 0; i < targetIds.length; i++) {
+      const pageTargetId = targetIds[i];
+      const targetDef = targetDefs[i];
+      console.log(`[worker] Target ${i + 1}/${targetIds.length}: ${targetDef.pageType} (${targetDef.path})`);
 
       try {
-        baseAsset = await shopifyFetch<{ asset: AssetDetail }>(
-          diffRun.shopDomain,
-          accessToken,
-          `themes/${diffRun.baseThemeId}/assets.json?asset[key]=${encodeURIComponent(key)}`
-        ).then((r) => r.asset);
+        // a. Capture base screenshot (keep page open for checks)
+        const baseUrl = buildPreviewUrl(ctx.shopDomain, ctx.baseThemeId, targetDef.path);
+        const baseResult = await capturePageTargetScreenshots(
+          ctx, pageTargetId, "base", baseUrl, targetDef.pageType,
+          storefrontPassword, hideSelectors, storage,
+        );
 
-        await sleep(THROTTLE_MS);
+        // b. Run DOM checks on base page, then close context
+        const baseChecks = await runChecksOnPage(baseResult.page, targetDef.pageType);
+        await baseResult.context.close();
 
-        candidateAsset = await shopifyFetch<{ asset: AssetDetail }>(
-          diffRun.shopDomain,
-          accessToken,
-          `themes/${diffRun.candidateThemeId}/assets.json?asset[key]=${encodeURIComponent(key)}`
-        ).then((r) => r.asset);
+        // c. Capture candidate screenshot (keep page open for checks)
+        const candidateUrl = buildPreviewUrl(ctx.shopDomain, ctx.candidateThemeId, targetDef.path);
+        const candidateResult = await capturePageTargetScreenshots(
+          ctx, pageTargetId, "candidate", candidateUrl, targetDef.pageType,
+          storefrontPassword, hideSelectors, storage,
+        );
 
-        await sleep(THROTTLE_MS);
+        // d. Run DOM checks on candidate page, then close context
+        const candidateChecks = await runChecksOnPage(candidateResult.page, targetDef.pageType);
+        await candidateResult.context.close();
+
+        // e. Generate visual diff
+        const basePath = `runs/${ctx.diffRunId}/base-${targetDef.pageType}.png`;
+        const candidatePath = `runs/${ctx.diffRunId}/candidate-${targetDef.pageType}.png`;
+        const diffResult = await generateVisualDiff(
+          ctx, pageTargetId, targetDef.pageType, basePath, candidatePath, storage,
+        );
+
+        if (diffResult.mismatchPercent > maxMismatchPercent) {
+          maxMismatchPercent = diffResult.mismatchPercent;
+        }
+
+        // f. Persist check results
+        const checkResult = await persistCheckResults(ctx, pageTargetId, baseChecks, candidateChecks);
+        allRegressions.push(...checkResult.regressions);
+
+        // Mark target complete
+        await ctx.prisma.pageTarget.update({
+          where: { id: pageTargetId },
+          data: { status: "complete" },
+        });
+        screenshotsComplete++;
       } catch (err) {
-        console.error(`[worker] Failed to fetch asset ${key}:`, (err as Error).message);
-        diffRows.push({
-          diffRunId,
-          key,
-          changeType: "large-file-skipped",
-          diffText: `Error fetching: ${(err as Error).message}`,
+        console.error(`[worker] Target ${targetDef.pageType} failed:`, (err as Error).message);
+        await ctx.prisma.pageTarget.update({
+          where: { id: pageTargetId },
+          data: {
+            status: "failed",
+            errorMessage: (err as Error).message.slice(0, 500),
+          },
         });
-        skippedCount++;
-        continue;
+        screenshotsFailed++;
       }
-
-      if (i % 10 === 0) {
-        console.log(`[worker] Progress: ${i}/${common.length} common assets compared`);
-      }
-
-      const baseContent = baseAsset.value ?? "";
-      const candidateContent = candidateAsset.value ?? "";
-
-      // Check size
-      if (
-        Buffer.byteLength(baseContent, "utf-8") > MAX_ASSET_SIZE ||
-        Buffer.byteLength(candidateContent, "utf-8") > MAX_ASSET_SIZE
-      ) {
-        diffRows.push({
-          diffRunId,
-          key,
-          changeType: "large-file-skipped",
-          diffText: null,
-        });
-        skippedCount++;
-        continue;
-      }
-
-      // Hash compare
-      const baseHash = sha256(baseContent);
-      const candidateHash = sha256(candidateContent);
-
-      if (baseHash === candidateHash) {
-        // Identical — skip (no row needed)
-        continue;
-      }
-
-      // Compute unified diff
-      const patch = createTwoFilesPatch(
-        `base/${key}`,
-        `candidate/${key}`,
-        baseContent,
-        candidateContent,
-        undefined,
-        undefined,
-        { context: 3 }
-      );
-
-      diffRows.push({
-        diffRunId,
-        key,
-        changeType: "modified",
-        diffText: patch,
-      });
-      modifiedCount++;
     }
 
-    // 6. Bulk insert AssetDiff rows
-    if (diffRows.length > 0) {
-      await prisma.assetDiff.createMany({ data: diffRows });
-    }
+    // ── Phase 4: Finalize ──
+    console.log("[worker] Phase 4: Finalizing");
+    await closeBrowser();
 
-    // 7. Update DiffRun — complete
+    const allTargetsFailed = targetIds.length > 0 && screenshotsFailed === targetIds.length;
+
     const summary = {
-      added: added.length,
-      removed: removed.length,
-      modified: modifiedCount,
-      skipped: skippedCount,
+      ...assetResult,
+      pageTargets: targetIds.length,
+      screenshotsComplete,
+      screenshotsFailed,
+      maxMismatchPercent: Math.round(maxMismatchPercent * 100) / 100,
+      riskCount: allRegressions.length,
+      regressions: allRegressions,
     };
 
     await prisma.diffRun.update({
       where: { id: diffRunId },
       data: {
-        status: "complete",
+        status: allTargetsFailed ? "failed" : "complete",
         summary,
+        errorMessage: allTargetsFailed ? "All page targets failed" : null,
       },
     });
 
     console.log(
       `[worker] Diff complete: ${diffRunId} — ` +
-        `added=${summary.added}, removed=${summary.removed}, ` +
-        `modified=${summary.modified}, skipped=${summary.skipped}`
+        `assets: +${assetResult.added} -${assetResult.removed} ~${assetResult.modified}, ` +
+        `screenshots: ${screenshotsComplete}/${targetIds.length}, ` +
+        `regressions: ${allRegressions.length}`,
     );
-
-    /*
-     * TODO: Visual Diff Placeholder
-     * ─────────────────────────────
-     * Future enhancement steps:
-     *
-     * 1. After text diffs are complete, optionally trigger a visual diff job.
-     * 2. Use Puppeteer or Playwright to open both theme preview URLs:
-     *    - Base: https://{shop}/?preview_theme_id={baseThemeId}
-     *    - Candidate: https://{shop}/?preview_theme_id={candidateThemeId}
-     * 3. Navigate to key pages (homepage, product page, collection page).
-     * 4. Capture full-page screenshots.
-     * 5. Upload to S3 / CloudFlare R2.
-     * 6. Run pixel-diff (e.g. pixelmatch) to generate diff overlay images.
-     * 7. Store visual diff metadata in a new VisualDiff model.
-     * 8. Notify the UI via the DiffRun record (add a `visualDiffStatus` field).
-     */
   } catch (err) {
     console.error(`[worker] Diff failed: ${diffRunId}`, (err as Error).message);
+    await closeBrowser();
     await prisma.diffRun.update({
       where: { id: diffRunId },
       data: {
@@ -347,7 +358,7 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
         errorMessage: (err as Error).message.slice(0, 500),
       },
     });
-    throw err; // Let BullMQ handle retry
+    throw err;
   }
 }
 
@@ -356,7 +367,7 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
 const worker = new Worker("theme-diff", processDiffJob, {
   connection: connectionConfig,
   concurrency: 1,
-  lockDuration: 300_000, // 5 min — asset comparison can take a while
+  lockDuration: 600_000, // 10 min — Playwright screenshots take longer
 });
 
 worker.on("completed", (job) => {
@@ -374,16 +385,13 @@ worker.on("error", (err) => {
 console.log("[worker] ThemeDiff worker started, waiting for jobs...");
 
 // Graceful shutdown
-process.on("SIGINT", async () => {
+async function shutdown() {
   console.log("[worker] Shutting down...");
+  await closeBrowser();
   await worker.close();
   await prisma.$disconnect();
   process.exit(0);
-});
+}
 
-process.on("SIGTERM", async () => {
-  console.log("[worker] Shutting down...");
-  await worker.close();
-  await prisma.$disconnect();
-  process.exit(0);
-});
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

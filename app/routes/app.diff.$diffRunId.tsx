@@ -9,17 +9,20 @@ import {
 } from "@remix-run/react";
 import {
   Badge,
+  Banner,
   BlockStack,
   Box,
   Button,
   Card,
   Collapsible,
+  DataTable,
   Divider,
   InlineStack,
   Layout,
   Page,
   ProgressBar,
   Spinner,
+  Tabs,
   Text,
 } from "@shopify/polaris";
 import { useCallback, useEffect, useState } from "react";
@@ -29,9 +32,7 @@ import prisma from "~/db.server";
 // ── Loader ───────────────────────────────────────────────────────────
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  console.log("[diff-detail] Loading diff run:", params.diffRunId);
   await authenticate.admin(request);
-  console.log("[diff-detail] Auth passed");
 
   const diffRunId = params.diffRunId;
   if (!diffRunId) {
@@ -44,16 +45,21 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       assetDiffs: {
         orderBy: { key: "asc" },
       },
+      pageTargets: {
+        orderBy: { createdAt: "asc" },
+        include: {
+          screenshots: { orderBy: { variant: "asc" } },
+          visualDiffs: true,
+          checkResults: { orderBy: { checkName: "asc" } },
+        },
+      },
     },
   });
-
-  console.log("[diff-detail] DiffRun found:", !!diffRun, diffRun?.status);
 
   if (!diffRun) {
     throw new Response("DiffRun not found", { status: 404 });
   }
 
-  // Serialize BigInts to strings for JSON transport
   return json({
     diffRun: {
       ...diffRun,
@@ -69,11 +75,11 @@ export default function DiffRunPage() {
   const { diffRun } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const navigate = useNavigate();
+  const [selectedTab, setSelectedTab] = useState(0);
 
   const isInProgress =
     diffRun.status === "queued" || diffRun.status === "running";
 
-  // Auto-refresh while job is in progress
   useEffect(() => {
     if (!isInProgress) return;
     const interval = setInterval(() => {
@@ -82,9 +88,14 @@ export default function DiffRunPage() {
     return () => clearInterval(interval);
   }, [isInProgress, revalidator]);
 
-  // Group diffs by changeType
-  const grouped = groupByChangeType(diffRun.assetDiffs);
   const summary = (diffRun.summary as any) || {};
+  const pageTargets = diffRun.pageTargets ?? [];
+
+  const tabs = [
+    { id: "files", content: `Files (${diffRun.assetDiffs.length})` },
+    { id: "visual", content: `Visual (${pageTargets.length})` },
+    { id: "checks", content: "Checks" },
+  ];
 
   return (
     <Page
@@ -118,81 +129,248 @@ export default function DiffRunPage() {
               )}
 
               {diffRun.status === "complete" && (
-                <InlineStack gap="400">
+                <InlineStack gap="400" wrap>
                   <SummaryChip label="Added" count={summary.added || 0} tone="success" />
                   <SummaryChip label="Removed" count={summary.removed || 0} tone="critical" />
                   <SummaryChip label="Modified" count={summary.modified || 0} tone="caution" />
                   <SummaryChip label="Skipped" count={summary.skipped || 0} tone="subdued" />
+                  {summary.pageTargets > 0 && (
+                    <>
+                      <SummaryChip label="Pages" count={summary.pageTargets} tone="info" />
+                      <SummaryChip
+                        label="Max Mismatch"
+                        count={`${summary.maxMismatchPercent ?? 0}%`}
+                        tone="warning"
+                      />
+                      {summary.riskCount > 0 && (
+                        <SummaryChip label="Regressions" count={summary.riskCount} tone="critical" />
+                      )}
+                    </>
+                  )}
                 </InlineStack>
               )}
 
               {isInProgress && (
                 <ProgressBar progress={diffRun.status === "running" ? 50 : 10} size="small" />
               )}
-
-              {/*
-                TODO: Visual Diff Placeholder
-                ─────────────────────────────
-                Future enhancement: Add screenshot comparison for visual diffs.
-                Steps:
-                1. Capture screenshots of both themes using a headless browser
-                   (e.g. Puppeteer with Shopify theme preview URLs).
-                2. Store screenshots in S3 or similar object storage.
-                3. Use a pixel-diff library (e.g. pixelmatch) to generate diff images.
-                4. Display side-by-side or overlay comparison in a new tab/section.
-                5. Add "Visual Diff" toggle button here.
-              */}
             </BlockStack>
           </Card>
         </Layout.Section>
 
-        {/* File lists by change type */}
+        {/* Tabs */}
         {diffRun.status === "complete" && (
-          <>
-            {grouped.added.length > 0 && (
-              <Layout.Section>
-                <DiffGroup
-                  title={`Added (${grouped.added.length})`}
-                  tone="success"
-                  diffs={grouped.added}
-                />
-              </Layout.Section>
-            )}
-
-            {grouped.removed.length > 0 && (
-              <Layout.Section>
-                <DiffGroup
-                  title={`Removed (${grouped.removed.length})`}
-                  tone="critical"
-                  diffs={grouped.removed}
-                />
-              </Layout.Section>
-            )}
-
-            {grouped.modified.length > 0 && (
-              <Layout.Section>
-                <DiffGroup
-                  title={`Modified (${grouped.modified.length})`}
-                  tone="warning"
-                  diffs={grouped.modified}
-                  showDiff
-                />
-              </Layout.Section>
-            )}
-
-            {grouped.skipped.length > 0 && (
-              <Layout.Section>
-                <DiffGroup
-                  title={`Skipped (${grouped.skipped.length})`}
-                  tone="info"
-                  diffs={grouped.skipped}
-                />
-              </Layout.Section>
-            )}
-          </>
+          <Layout.Section>
+            <Card padding="0">
+              <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
+                <Box padding="400">
+                  {selectedTab === 0 && <FilesTab assetDiffs={diffRun.assetDiffs} />}
+                  {selectedTab === 1 && <VisualTab pageTargets={pageTargets} />}
+                  {selectedTab === 2 && <ChecksTab pageTargets={pageTargets} />}
+                </Box>
+              </Tabs>
+            </Card>
+          </Layout.Section>
         )}
       </Layout>
     </Page>
+  );
+}
+
+// ── Files Tab ────────────────────────────────────────────────────────
+
+function FilesTab({ assetDiffs }: { assetDiffs: AssetDiffRow[] }) {
+  const grouped = groupByChangeType(assetDiffs);
+
+  return (
+    <BlockStack gap="400">
+      {grouped.added.length > 0 && (
+        <DiffGroup
+          title={`Added (${grouped.added.length})`}
+          tone="success"
+          diffs={grouped.added}
+        />
+      )}
+      {grouped.removed.length > 0 && (
+        <DiffGroup
+          title={`Removed (${grouped.removed.length})`}
+          tone="critical"
+          diffs={grouped.removed}
+        />
+      )}
+      {grouped.modified.length > 0 && (
+        <DiffGroup
+          title={`Modified (${grouped.modified.length})`}
+          tone="warning"
+          diffs={grouped.modified}
+          showDiff
+        />
+      )}
+      {grouped.skipped.length > 0 && (
+        <DiffGroup
+          title={`Skipped (${grouped.skipped.length})`}
+          tone="info"
+          diffs={grouped.skipped}
+        />
+      )}
+      {assetDiffs.length === 0 && (
+        <Text as="p" tone="subdued">No file changes detected.</Text>
+      )}
+    </BlockStack>
+  );
+}
+
+// ── Visual Tab ───────────────────────────────────────────────────────
+
+function VisualTab({ pageTargets }: { pageTargets: PageTargetData[] }) {
+  if (pageTargets.length === 0) {
+    return <Text as="p" tone="subdued">No visual comparisons available.</Text>;
+  }
+
+  return (
+    <BlockStack gap="600">
+      {pageTargets.map((target) => (
+        <PageTargetVisual key={target.id} target={target} />
+      ))}
+    </BlockStack>
+  );
+}
+
+function PageTargetVisual({ target }: { target: PageTargetData }) {
+  const baseScreenshot = target.screenshots.find((s) => s.variant === "base");
+  const candidateScreenshot = target.screenshots.find((s) => s.variant === "candidate");
+  const visualDiff = target.visualDiffs[0];
+
+  return (
+    <BlockStack gap="300">
+      <InlineStack gap="200" blockAlign="center">
+        <Text as="h3" variant="headingSm">
+          {target.pageType.toUpperCase()} — {target.path}
+        </Text>
+        <PageTargetStatusBadge status={target.status} />
+        {visualDiff && (
+          <Badge tone={visualDiff.mismatchPercent > 5 ? "warning" : "success"}>
+            {visualDiff.mismatchPercent}% mismatch
+          </Badge>
+        )}
+      </InlineStack>
+
+      {target.errorMessage && (
+        <Text as="p" tone="critical">{target.errorMessage}</Text>
+      )}
+
+      {target.status === "complete" && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr 1fr",
+            gap: "12px",
+          }}
+        >
+          <ScreenshotColumn
+            label="Base"
+            screenshot={baseScreenshot}
+          />
+          <ScreenshotColumn
+            label="Candidate"
+            screenshot={candidateScreenshot}
+          />
+          <DiffColumn label="Diff" visualDiff={visualDiff} />
+        </div>
+      )}
+
+      <Divider />
+    </BlockStack>
+  );
+}
+
+function ScreenshotColumn({
+  label,
+  screenshot,
+}: {
+  label: string;
+  screenshot?: ScreenshotData;
+}) {
+  return (
+    <BlockStack gap="200">
+      <Text as="span" variant="bodySm" fontWeight="semibold">
+        {label}
+      </Text>
+      {screenshot ? (
+        <img
+          src={`/${screenshot.filePath}`}
+          alt={`${label} screenshot`}
+          style={{ width: "100%", border: "1px solid var(--p-color-border)" }}
+        />
+      ) : (
+        <Text as="p" tone="subdued">No screenshot</Text>
+      )}
+    </BlockStack>
+  );
+}
+
+function DiffColumn({
+  label,
+  visualDiff,
+}: {
+  label: string;
+  visualDiff?: VisualDiffData;
+}) {
+  return (
+    <BlockStack gap="200">
+      <Text as="span" variant="bodySm" fontWeight="semibold">
+        {label}
+      </Text>
+      {visualDiff ? (
+        <img
+          src={`/${visualDiff.diffFilePath}`}
+          alt="Visual diff"
+          style={{ width: "100%", border: "1px solid var(--p-color-border)" }}
+        />
+      ) : (
+        <Text as="p" tone="subdued">No diff</Text>
+      )}
+    </BlockStack>
+  );
+}
+
+// ── Checks Tab ───────────────────────────────────────────────────────
+
+function ChecksTab({ pageTargets }: { pageTargets: PageTargetData[] }) {
+  const allChecks = pageTargets.flatMap((target) =>
+    groupChecksByName(target.checkResults).map((group) => ({
+      ...group,
+      pageType: target.pageType,
+    })),
+  );
+
+  const regressions = allChecks.filter(
+    (c) => c.basePassed && !c.candidatePassed,
+  );
+
+  return (
+    <BlockStack gap="400">
+      {regressions.length > 0 && (
+        <Banner tone="critical">
+          {regressions.length} regression{regressions.length !== 1 ? "s" : ""}{" "}
+          detected — checks that passed on base but failed on candidate.
+        </Banner>
+      )}
+
+      {allChecks.length > 0 ? (
+        <DataTable
+          columnContentTypes={["text", "text", "text", "text"]}
+          headings={["Check", "Page", "Base", "Candidate"]}
+          rows={allChecks.map((c) => [
+            c.checkName,
+            c.pageType,
+            c.basePassed ? "Pass" : "Fail",
+            c.candidatePassed ? "Pass" : "Fail",
+          ])}
+        />
+      ) : (
+        <Text as="p" tone="subdued">No checks ran for this diff.</Text>
+      )}
+    </BlockStack>
   );
 }
 
@@ -209,13 +387,23 @@ function StatusBadge({ status }: { status: string }) {
   return <Badge tone={tone}>{label}</Badge>;
 }
 
+function PageTargetStatusBadge({ status }: { status: string }) {
+  const map: Record<string, { tone: any; label: string }> = {
+    pending: { tone: "attention", label: "Pending" },
+    complete: { tone: "success", label: "Complete" },
+    failed: { tone: "critical", label: "Failed" },
+  };
+  const { tone, label } = map[status] || { tone: "new", label: status };
+  return <Badge tone={tone}>{label}</Badge>;
+}
+
 function SummaryChip({
   label,
   count,
   tone,
 }: {
   label: string;
-  count: number;
+  count: number | string;
   tone: string;
 }) {
   return (
@@ -255,17 +443,15 @@ function DiffGroup({
   showDiff?: boolean;
 }) {
   return (
-    <Card>
-      <BlockStack gap="300">
-        <Text as="h2" variant="headingMd">
-          {title}
-        </Text>
-        <Divider />
-        {diffs.map((diff) => (
-          <DiffFileRow key={diff.id} diff={diff} showDiff={showDiff} />
-        ))}
-      </BlockStack>
-    </Card>
+    <BlockStack gap="300">
+      <Text as="h2" variant="headingMd">
+        {title}
+      </Text>
+      <Divider />
+      {diffs.map((diff) => (
+        <DiffFileRow key={diff.id} diff={diff} showDiff={showDiff} />
+      ))}
+    </BlockStack>
   );
 }
 
@@ -319,6 +505,45 @@ function DiffFileRow({
   );
 }
 
+// ── Types ────────────────────────────────────────────────────────────
+
+interface ScreenshotData {
+  id: string;
+  variant: string;
+  filePath: string;
+  width: number;
+  height: number;
+}
+
+interface VisualDiffData {
+  id: string;
+  diffFilePath: string;
+  mismatchCount: number;
+  mismatchPercent: number;
+  totalPixels: number;
+}
+
+interface CheckResultData {
+  id: string;
+  checkName: string;
+  variant: string;
+  passed: boolean;
+  selector: string;
+  detail: string | null;
+}
+
+interface PageTargetData {
+  id: string;
+  pageType: string;
+  path: string;
+  handle: string | null;
+  status: string;
+  errorMessage: string | null;
+  screenshots: ScreenshotData[];
+  visualDiffs: VisualDiffData[];
+  checkResults: CheckResultData[];
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function groupByChangeType(diffs: AssetDiffRow[]) {
@@ -341,12 +566,33 @@ function groupByChangeType(diffs: AssetDiffRow[]) {
         groups.modified.push(d);
         break;
       default:
-        // binary-skipped, large-file-skipped
         groups.skipped.push(d);
     }
   }
 
   return groups;
+}
+
+function groupChecksByName(checks: CheckResultData[]) {
+  const map = new Map<
+    string,
+    { checkName: string; basePassed: boolean; candidatePassed: boolean }
+  >();
+
+  for (const c of checks) {
+    if (!map.has(c.checkName)) {
+      map.set(c.checkName, {
+        checkName: c.checkName,
+        basePassed: false,
+        candidatePassed: false,
+      });
+    }
+    const entry = map.get(c.checkName)!;
+    if (c.variant === "base") entry.basePassed = c.passed;
+    if (c.variant === "candidate") entry.candidatePassed = c.passed;
+  }
+
+  return Array.from(map.values());
 }
 
 // ── Error Boundary ──────────────────────────────────────────────────

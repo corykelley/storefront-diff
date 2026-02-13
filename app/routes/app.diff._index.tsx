@@ -4,6 +4,7 @@ import {
   Form,
   Link,
   useActionData,
+  useFetcher,
   useLoaderData,
   useNavigation,
 } from "@remix-run/react";
@@ -55,6 +56,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const formData = await request.formData();
 
+  const intent = formData.get("intent");
+
+  // ── Delete run ──
+  if (intent === "delete") {
+    const runId = formData.get("runId") as string;
+    if (runId) {
+      // Clean up screenshot files on disk
+      const { rm } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const runDir = join("public", "runs", runId);
+      await rm(runDir, { recursive: true, force: true }).catch(() => {});
+
+      await prisma.diffRun.delete({ where: { id: runId } });
+    }
+    return json({ deleted: true });
+  }
+
+  // ── Create run ──
   const baseThemeId = formData.get("baseThemeId");
   const candidateThemeId = formData.get("candidateThemeId");
   const baseThemeName = formData.get("baseThemeName") as string;
@@ -203,20 +222,7 @@ export default function DiffPage() {
                   Recent diff runs
                 </Text>
                 {recentRuns.map((run: any) => (
-                  <Card key={run.id}>
-                    <InlineStack align="space-between" blockAlign="center">
-                      <BlockStack gap="100">
-                        <Text as="p" variant="bodyMd" fontWeight="semibold">
-                          {run.baseThemeName} → {run.candidateThemeName}
-                        </Text>
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          {new Date(run.createdAt).toLocaleString()} —{" "}
-                          <StatusLabel status={run.status} />
-                        </Text>
-                      </BlockStack>
-                      <Link to={`/app/diff/${run.id}`}>View</Link>
-                    </InlineStack>
-                  </Card>
+                  <RunRow key={run.id} run={run} />
                 ))}
               </BlockStack>
             </Card>
@@ -224,6 +230,42 @@ export default function DiffPage() {
         )}
       </Layout>
     </Page>
+  );
+}
+
+function RunRow({ run }: { run: any }) {
+  const fetcher = useFetcher();
+  const isDeleting = fetcher.state !== "idle";
+
+  return (
+    <Card key={run.id}>
+      <InlineStack align="space-between" blockAlign="center">
+        <BlockStack gap="100">
+          <Text as="p" variant="bodyMd" fontWeight="semibold">
+            {run.baseThemeName} → {run.candidateThemeName}
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            {new Date(run.createdAt).toLocaleString()} —{" "}
+            <StatusLabel status={run.status} />
+          </Text>
+        </BlockStack>
+        <InlineStack gap="200">
+          <Link to={`/app/diff/${run.id}`}>View</Link>
+          <fetcher.Form method="post">
+            <input type="hidden" name="intent" value="delete" />
+            <input type="hidden" name="runId" value={run.id} />
+            <Button
+              variant="plain"
+              tone="critical"
+              submit
+              loading={isDeleting}
+            >
+              Delete
+            </Button>
+          </fetcher.Form>
+        </InlineStack>
+      </InlineStack>
+    </Card>
   );
 }
 

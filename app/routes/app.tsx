@@ -21,6 +21,7 @@ export default function App() {
       <NavMenu>
         <Link to="/app" rel="home">Home</Link>
         <Link to="/app/diff">Theme Diff</Link>
+        <Link to="/app/settings">Settings</Link>
       </NavMenu>
       <Outlet />
     </AppProvider>

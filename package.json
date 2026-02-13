@@ -8,7 +8,7 @@
     "dev": "remix vite:dev",
     "dev:shopify": "shopify app dev",
     "worker": "tsx --watch worker/index.ts",
-    "setup": "prisma generate && prisma db push",
+    "setup": "prisma generate && prisma db push && npx playwright install chromium",
     "prisma:studio": "prisma studio",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
@@ -24,6 +24,9 @@
     "bullmq": "^5.25.0",
     "diff": "^7.0.0",
     "isbot": "^5.1.17",
+    "pixelmatch": "^6.0.0",
+    "playwright": "^1.58.2",
+    "pngjs": "^7.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "vite-tsconfig-paths": "^6.1.1"
@@ -31,6 +34,7 @@
   "devDependencies": {
     "@remix-run/dev": "^2.15.0",
     "@types/diff": "^5.2.3",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "prisma": "^5.22.0",

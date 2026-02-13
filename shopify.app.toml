@@ -7,7 +7,7 @@ application_url = "https://your-tunnel.trycloudflare.com"
 embedded = true
 
 [access_scopes]
-scopes = "read_themes"
+scopes = "read_themes,read_products"
 
 [auth]
 redirect_urls = [

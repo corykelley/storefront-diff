@@ -49,6 +49,73 @@ model DiffRun {
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
   assetDiffs         AssetDiff[]
+  pageTargets        PageTarget[]
+}
+
+// ── ShopSetting ──
+model ShopSetting {
+  id                 String   @id @default(cuid())
+  shopDomain         String   @unique
+  storefrontPassword String?
+  hideSelectors      String?  @db.Text  // newline-separated CSS selectors
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+// ── PageTarget ──
+model PageTarget {
+  id           String        @id @default(cuid())
+  diffRunId    String
+  diffRun      DiffRun       @relation(fields: [diffRunId], references: [id], onDelete: Cascade)
+  pageType     String        // "home" | "product" | "collection" | "cart"
+  path         String        // e.g. "/" or "/products/some-handle"
+  handle       String?       // resolved handle for product/collection
+  status       String        @default("pending")  // pending | complete | failed
+  errorMessage String?
+  createdAt    DateTime      @default(now())
+  screenshots  Screenshot[]
+  visualDiffs  VisualDiff[]
+  checkResults CheckResult[]
+  @@index([diffRunId])
+}
+
+// ── Screenshot ──
+model Screenshot {
+  id           String     @id @default(cuid())
+  pageTargetId String
+  pageTarget   PageTarget @relation(fields: [pageTargetId], references: [id], onDelete: Cascade)
+  variant      String     // "base" | "candidate"
+  filePath     String     // relative to public/, e.g. "runs/{id}/base-home.png"
+  width        Int
+  height       Int
+  createdAt    DateTime   @default(now())
+  @@index([pageTargetId])
+}
+
+// ── VisualDiff ──
+model VisualDiff {
+  id              String     @id @default(cuid())
+  pageTargetId    String     @unique
+  pageTarget      PageTarget @relation(fields: [pageTargetId], references: [id], onDelete: Cascade)
+  diffFilePath    String
+  mismatchCount   Int
+  mismatchPercent Float      // 0.0–100.0
+  totalPixels     Int
+  createdAt       DateTime   @default(now())
+}
+
+// ── CheckResult ──
+model CheckResult {
+  id           String     @id @default(cuid())
+  pageTargetId String
+  pageTarget   PageTarget @relation(fields: [pageTargetId], references: [id], onDelete: Cascade)
+  checkName    String     // e.g. "PDP_ATC_PRESENT"
+  variant      String     // "base" | "candidate"
+  passed       Boolean
+  selector     String
+  detail       String?
+  createdAt    DateTime   @default(now())
+  @@index([pageTargetId])
 }
 
 // ── AssetDiff ──
