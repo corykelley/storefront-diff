@@ -1,0 +1,44 @@
+{
+  "name": "theme-diff",
+  "private": true,
+  "sideEffects": false,
+  "type": "module",
+  "scripts": {
+    "build": "remix vite:build",
+    "dev": "remix vite:dev",
+    "dev:shopify": "shopify app dev",
+    "worker": "tsx --watch worker/index.ts",
+    "setup": "prisma generate && prisma db push",
+    "prisma:studio": "prisma studio",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "@remix-run/node": "^2.15.0",
+    "@remix-run/react": "^2.15.0",
+    "@shopify/app-bridge-react": "^4.2.10",
+    "@shopify/polaris": "^13.9.0",
+    "@shopify/shopify-app-remix": "^3.3.0",
+    "@shopify/shopify-app-session-storage-prisma": "^5.1.0",
+    "bullmq": "^5.25.0",
+    "diff": "^7.0.0",
+    "isbot": "^5.1.17",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite-tsconfig-paths": "^6.1.1"
+  },
+  "devDependencies": {
+    "@remix-run/dev": "^2.15.0",
+    "@types/diff": "^5.2.3",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

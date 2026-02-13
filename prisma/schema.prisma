@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Shopify Session (managed by @shopify/shopify-app-session-storage-prisma) ──
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+// ── Shop (convenience table populated via afterAuth hook) ──
+model Shop {
+  id          String   @id @default(cuid())
+  shopDomain  String   @unique
+  accessToken String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ── DiffRun ──
+model DiffRun {
+  id                 String      @id @default(cuid())
+  shopDomain         String
+  baseThemeId        BigInt
+  baseThemeName      String
+  candidateThemeId   BigInt
+  candidateThemeName String
+  status             String      @default("queued") // queued | running | complete | failed
+  summary            Json?       // { added: N, removed: N, modified: N, skipped: N }
+  errorMessage       String?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  assetDiffs         AssetDiff[]
+}
+
+// ── AssetDiff ──
+model AssetDiff {
+  id         String   @id @default(cuid())
+  diffRunId  String
+  diffRun    DiffRun  @relation(fields: [diffRunId], references: [id], onDelete: Cascade)
+  key        String   // e.g. "templates/index.liquid"
+  changeType String   // added | removed | modified | large-file-skipped | binary-skipped
+  diffText   String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([diffRunId])
+}
