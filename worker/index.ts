@@ -18,6 +18,7 @@ import { resolvePageTargets, buildPreviewUrl, createPageTargetRecords } from "./
 import { capturePageTargetScreenshots, closeBrowser } from "./screenshots.js";
 import { generateVisualDiff } from "./visualDiff.js";
 import { runChecksOnPage, persistCheckResults } from "./checks.js";
+import { runInteractiveTestsOnPage, persistInteractiveTestResults } from "./interactiveTests.js";
 import { createStorageProvider } from "./storage.js";
 import type { PipelineContext } from "./types.js";
 
@@ -273,6 +274,8 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
     let screenshotsFailed = 0;
     let maxMismatchPercent = 0;
     const allRegressions: Array<{ checkName: string; pageType: string }> = [];
+    const allInteractiveRegressions: Array<{ testName: string; pageType: string }> = [];
+    let interactiveTestCount = 0;
 
     for (let i = 0; i < targetIds.length; i++) {
       const pageTargetId = targetIds[i];
@@ -288,22 +291,48 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
           storefrontPassword, hideSelectors, storage,
         );
 
-        // b. Run DOM checks on base page, then close context
+        // b. Run DOM checks on base page
         const baseChecks = await runChecksOnPage(baseResult.page, targetDef.pageType);
+
+        // c. Run interactive tests on base page (if enabled)
+        let baseTestOutcomes: any[] = [];
+        if (settings?.interactiveTestsEnabled) {
+          baseTestOutcomes = await runInteractiveTestsOnPage(
+            baseResult.page,
+            targetDef.pageType,
+            "base",
+            ctx,
+            storage
+          );
+        }
+
         await baseResult.context.close();
 
-        // c. Capture candidate screenshot (keep page open for checks)
+        // d. Capture candidate screenshot (keep page open for checks)
         const candidateUrl = buildPreviewUrl(ctx.shopDomain, ctx.candidateThemeId, targetDef.path);
         const candidateResult = await capturePageTargetScreenshots(
           ctx, pageTargetId, "candidate", candidateUrl, targetDef.pageType,
           storefrontPassword, hideSelectors, storage,
         );
 
-        // d. Run DOM checks on candidate page, then close context
+        // e. Run DOM checks on candidate page
         const candidateChecks = await runChecksOnPage(candidateResult.page, targetDef.pageType);
+
+        // f. Run interactive tests on candidate page (if enabled)
+        let candidateTestOutcomes: any[] = [];
+        if (settings?.interactiveTestsEnabled) {
+          candidateTestOutcomes = await runInteractiveTestsOnPage(
+            candidateResult.page,
+            targetDef.pageType,
+            "candidate",
+            ctx,
+            storage
+          );
+        }
+
         await candidateResult.context.close();
 
-        // e. Generate visual diff
+        // g. Generate visual diff
         const basePath = `runs/${ctx.diffRunId}/base-${targetDef.pageType}.png`;
         const candidatePath = `runs/${ctx.diffRunId}/candidate-${targetDef.pageType}.png`;
         const diffResult = await generateVisualDiff(
@@ -314,9 +343,21 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
           maxMismatchPercent = diffResult.mismatchPercent;
         }
 
-        // f. Persist check results
+        // h. Persist check results
         const checkResult = await persistCheckResults(ctx, pageTargetId, baseChecks, candidateChecks);
         allRegressions.push(...checkResult.regressions);
+
+        // i. Persist interactive test results (if enabled)
+        if (settings?.interactiveTestsEnabled && (baseTestOutcomes.length > 0 || candidateTestOutcomes.length > 0)) {
+          const testResult = await persistInteractiveTestResults(
+            ctx,
+            pageTargetId,
+            baseTestOutcomes,
+            candidateTestOutcomes
+          );
+          allInteractiveRegressions.push(...testResult.regressions);
+          interactiveTestCount += baseTestOutcomes.length;
+        }
 
         // Mark target complete
         await ctx.prisma.pageTarget.update({
@@ -349,8 +390,14 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
       screenshotsComplete,
       screenshotsFailed,
       maxMismatchPercent: Math.round(maxMismatchPercent * 100) / 100,
-      riskCount: allRegressions.length,
-      regressions: allRegressions,
+      riskCount: allRegressions.length + allInteractiveRegressions.length,
+      regressions: [
+        ...allRegressions,
+        ...allInteractiveRegressions.map(r => ({ type: "interactive", ...r })),
+      ],
+      interactiveTestsRun: settings?.interactiveTestsEnabled ?? false,
+      interactiveTestCount,
+      interactiveRegressions: allInteractiveRegressions.length,
     };
 
     await prisma.diffRun.update({

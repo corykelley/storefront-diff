@@ -39,3 +39,25 @@ export interface CheckOutcome {
   selector: string;
   detail?: string;
 }
+
+// ── Interactive Tests ────────────────────────────────────────────────
+
+export interface InteractiveTestOutcome {
+  testName: string;
+  status: "passed" | "failed" | "error" | "partial";
+  steps: StepOutcome[];
+  errorMessage: string | null;
+  totalSteps: number;
+  completedSteps: number;
+}
+
+export interface StepOutcome {
+  stepNumber: number;
+  action: string;
+  status: "success" | "failed" | "skipped";
+  selector?: string;
+  attemptedSelectors?: string[];
+  screenshotPath?: string | null;
+  errorDetail?: string;
+  durationMs: number;
+}

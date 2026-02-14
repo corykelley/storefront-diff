@@ -4,8 +4,10 @@ import { useActionData, useLoaderData, useNavigation, useSubmit } from "@remix-r
 import {
   Banner,
   BlockStack,
+  Box,
   Button,
   Card,
+  Checkbox,
   Layout,
   Page,
   Text,
@@ -29,6 +31,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     storefrontPassword: settings?.storefrontPassword ?? "",
     hideSelectors: settings?.hideSelectors ?? "",
     customUrls: settings?.customUrls ?? "",
+    interactiveTestsEnabled: settings?.interactiveTestsEnabled ?? false,
   });
 };
 
@@ -42,6 +45,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const storefrontPassword = (formData.get("storefrontPassword") as string) || "";
   const hideSelectors = (formData.get("hideSelectors") as string) || "";
   const customUrls = (formData.get("customUrls") as string) || "";
+  const interactiveTestsEnabled = formData.get("interactiveTestsEnabled") === "true";
 
   await prisma.shopSetting.upsert({
     where: { shopDomain },
@@ -50,11 +54,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       storefrontPassword: storefrontPassword || null,
       hideSelectors: hideSelectors || null,
       customUrls: customUrls || null,
+      interactiveTestsEnabled,
     },
     update: {
       storefrontPassword: storefrontPassword || null,
       hideSelectors: hideSelectors || null,
       customUrls: customUrls || null,
+      interactiveTestsEnabled,
     },
   });
 
@@ -78,6 +84,9 @@ export default function SettingsPage() {
   const [customUrls, setCustomUrls] = useState(
     loaderData.customUrls,
   );
+  const [interactiveTestsEnabled, setInteractiveTestsEnabled] = useState(
+    loaderData.interactiveTestsEnabled,
+  );
 
   const isSaving = navigation.state === "submitting";
 
@@ -86,12 +95,14 @@ export default function SettingsPage() {
     formData.set("storefrontPassword", storefrontPassword);
     formData.set("hideSelectors", hideSelectors);
     formData.set("customUrls", customUrls);
+    formData.set("interactiveTestsEnabled", String(interactiveTestsEnabled));
     submit(formData, { method: "post" });
-  }, [storefrontPassword, hideSelectors, customUrls, submit]);
+  }, [storefrontPassword, hideSelectors, customUrls, interactiveTestsEnabled, submit]);
 
   return (
     <Page title="Settings">
-      <Layout>
+      <Box paddingBlockEnd="800">
+        <Layout>
         {actionData?.success && (
           <Layout.Section>
             <Banner tone="success" onDismiss={() => {}}>
@@ -129,7 +140,7 @@ export default function SettingsPage() {
                 value={hideSelectors}
                 onChange={setHideSelectors}
                 multiline={4}
-                helpText="CSS selectors to hide during screenshots (one per line). Useful for hiding dynamic content like chat widgets or banners."
+                helpText="CSS selectors to hide during screenshots and interactive tests (one per line). Useful for hiding dynamic content like chat widgets, cookie banners, or newsletter popups."
                 autoComplete="off"
               />
             </BlockStack>
@@ -155,11 +166,28 @@ export default function SettingsPage() {
         </Layout.Section>
 
         <Layout.Section>
+          <Card>
+            <BlockStack gap="400">
+              <Text as="h2" variant="headingMd">
+                Interactive Tests
+              </Text>
+              <Checkbox
+                label="Enable interactive tests"
+                checked={interactiveTestsEnabled}
+                onChange={setInteractiveTestsEnabled}
+                helpText="Run automated tests for user flows (buy flow, navigation, mobile menu). Adds ~30-60 seconds to diff processing."
+              />
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+
+        <Layout.Section>
           <Button variant="primary" onClick={handleSave} loading={isSaving}>
             Save
           </Button>
         </Layout.Section>
       </Layout>
+      </Box>
     </Page>
   );
 }

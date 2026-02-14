@@ -3,5 +3,5 @@ roles = ["frontend", "backend"]
 webhooks_path = "/webhooks"
 
 [commands]
-dev = "npx prisma generate && remix vite:dev"
-build = "remix vite:build"
+dev = "npx prisma generate && npx remix vite:dev"
+build = "npx remix vite:build"

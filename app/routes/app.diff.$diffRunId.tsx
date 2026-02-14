@@ -53,6 +53,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
           screenshots: { orderBy: { variant: "asc" } },
           visualDiffs: true,
           checkResults: { orderBy: { checkName: "asc" } },
+          interactiveTests: {
+            orderBy: { testName: "asc" },
+            include: {
+              steps: { orderBy: { stepNumber: "asc" } },
+            },
+          },
         },
       },
     },
@@ -108,6 +114,7 @@ export default function DiffRunPage() {
     { id: "files", content: `Files (${diffRun.assetDiffs.length})` },
     { id: "visual", content: `Visual (${pageTargets.length})` },
     { id: "checks", content: "Checks" },
+    { id: "flows", content: "Flows" },
   ];
 
   return (
@@ -179,6 +186,7 @@ export default function DiffRunPage() {
                   {selectedTab === 0 && <FilesTab assetDiffs={diffRun.assetDiffs} />}
                   {selectedTab === 1 && <VisualTab pageTargets={pageTargets} onZoom={setZoomTarget} />}
                   {selectedTab === 2 && <ChecksTab pageTargets={pageTargets} />}
+                  {selectedTab === 3 && <FlowsTab pageTargets={pageTargets} />}
                 </Box>
               </Tabs>
             </Card>
@@ -668,6 +676,7 @@ interface PageTargetData {
   screenshots: ScreenshotData[];
   visualDiffs: VisualDiffData[];
   checkResults: CheckResultData[];
+  interactiveTests?: InteractiveTestData[];
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -719,6 +728,291 @@ function groupChecksByName(checks: CheckResultData[]) {
   }
 
   return Array.from(map.values());
+}
+
+// ── Flows Tab ────────────────────────────────────────────────────────
+
+interface InteractiveTestData {
+  id: string;
+  testName: string;
+  variant: string;
+  status: string;
+  errorMessage: string | null;
+  totalSteps: number;
+  completedSteps: number;
+  steps: InteractiveStepData[];
+}
+
+interface InteractiveStepData {
+  id: string;
+  stepNumber: number;
+  action: string;
+  status: string;
+  selector: string | null;
+  screenshotPath: string | null;
+  errorDetail: string | null;
+  durationMs: number | null;
+}
+
+interface GroupedFlowTest {
+  testName: string;
+  pageType: string;
+  path: string;
+  baseStatus: string | null;
+  candidateStatus: string | null;
+  baseSteps: InteractiveStepData[];
+  candidateSteps: InteractiveStepData[];
+}
+
+function FlowsTab({ pageTargets }: { pageTargets: PageTargetData[] }) {
+  const allTests = pageTargets.flatMap(target =>
+    groupTestsByName(target.interactiveTests || [], target.pageType, target.path)
+  );
+
+  const regressions = allTests.filter(
+    t => t.baseStatus === "passed" && t.candidateStatus !== "passed"
+  );
+
+  if (allTests.length === 0) {
+    return (
+      <BlockStack gap="400">
+        <Banner>
+          <p>No interactive tests were run for this diff. Enable interactive tests in Settings to validate user flows.</p>
+        </Banner>
+      </BlockStack>
+    );
+  }
+
+  return (
+    <BlockStack gap="400">
+      {regressions.length > 0 && (
+        <Banner tone="critical">
+          <p><strong>{regressions.length} flow regression(s) detected:</strong> The candidate theme has user interaction issues that the base theme doesn't have.</p>
+        </Banner>
+      )}
+
+      {allTests.map((test, idx) => (
+        <FlowTestCard key={idx} test={test} />
+      ))}
+    </BlockStack>
+  );
+}
+
+function FlowTestCard({ test }: { test: GroupedFlowTest }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const isRegression = test.baseStatus === "passed" && test.candidateStatus !== "passed";
+
+  return (
+    <Card>
+      <BlockStack gap="300">
+        <InlineStack align="space-between" blockAlign="start">
+          <BlockStack gap="100">
+            <Text variant="headingMd" as="h3">{formatTestName(test.testName)}</Text>
+            <Text variant="bodySm" tone="subdued">
+              {test.pageType} · {test.path}
+            </Text>
+          </BlockStack>
+          <InlineStack gap="200">
+            <Badge tone={getStatusTone(test.baseStatus)}>
+              Base: {test.baseStatus || "not run"}
+            </Badge>
+            <Badge tone={getStatusTone(test.candidateStatus)}>
+              Candidate: {test.candidateStatus || "not run"}
+            </Badge>
+          </InlineStack>
+        </InlineStack>
+
+        {isRegression && (
+          <Banner tone="critical">
+            Regression: This flow passed on the base theme but failed on the candidate theme.
+          </Banner>
+        )}
+
+        <Button onClick={() => setExpanded(!expanded)} variant="plain">
+          {expanded ? "Hide steps" : "Show steps"}
+        </Button>
+
+        <Collapsible open={expanded} id={`flow-${test.testName}`}>
+          <BlockStack gap="400">
+            <Divider />
+
+            <BlockStack gap="300">
+              <Text variant="headingSm" as="h4">Base Theme</Text>
+              <FlowStepTimeline steps={test.baseSteps} />
+            </BlockStack>
+
+            <Divider />
+
+            <BlockStack gap="300">
+              <Text variant="headingSm" as="h4">Candidate Theme</Text>
+              <FlowStepTimeline steps={test.candidateSteps} />
+            </BlockStack>
+          </BlockStack>
+        </Collapsible>
+      </BlockStack>
+    </Card>
+  );
+}
+
+function FlowStepTimeline({ steps }: { steps: InteractiveStepData[] }) {
+  const [zoomedScreenshot, setZoomedScreenshot] = useState<string | null>(null);
+
+  if (steps.length === 0) {
+    return <Text tone="subdued">No steps recorded</Text>;
+  }
+
+  return (
+    <>
+      <BlockStack gap="300">
+        {steps.map((step) => (
+          <InlineStack key={step.id} gap="300" blockAlign="start">
+            <Box
+              minWidth="40px"
+              padding="200"
+              borderRadius="full"
+              background={
+                step.status === "success"
+                  ? "bg-fill-success"
+                  : step.status === "skipped"
+                  ? "bg-fill-info-secondary"
+                  : "bg-fill-critical"
+              }
+            >
+              <Text
+                variant="bodyMd"
+                fontWeight="semibold"
+                alignment="center"
+                tone={step.status === "success" ? "success" : step.status === "skipped" ? "base" : "critical"}
+              >
+                {step.stepNumber}
+              </Text>
+            </Box>
+
+            <BlockStack gap="200" inlineAlign="start">
+              <InlineStack gap="200" blockAlign="center">
+                <Text variant="bodyMd">{formatAction(step.action)}</Text>
+                {step.durationMs && (
+                  <Badge tone="info">{step.durationMs}ms</Badge>
+                )}
+              </InlineStack>
+
+              {step.status === "skipped" && (
+                <Text variant="bodySm" tone="subdued">
+                  Skipped (optional step)
+                </Text>
+              )}
+
+              {step.errorDetail && (
+                <Banner tone="critical">
+                  <p style={{ fontSize: "0.875rem" }}>{step.errorDetail}</p>
+                </Banner>
+              )}
+
+              {step.screenshotPath && (
+                <Box>
+                  <img
+                    src={`/${step.screenshotPath}`}
+                    alt={`Step ${step.stepNumber}`}
+                    style={{
+                      maxWidth: "400px",
+                      border: "1px solid var(--p-border)",
+                      borderRadius: "8px",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => setZoomedScreenshot(step.screenshotPath)}
+                  />
+                </Box>
+              )}
+
+              {step.selector && (
+                <Text variant="bodySm" tone="subdued">
+                  Selector: <code>{step.selector}</code>
+                </Text>
+              )}
+            </BlockStack>
+          </InlineStack>
+        ))}
+      </BlockStack>
+
+      {zoomedScreenshot && (
+        <Modal
+          open={!!zoomedScreenshot}
+          onClose={() => setZoomedScreenshot(null)}
+          title="Screenshot"
+          large
+        >
+          <Modal.Section>
+            <img
+              src={`/${zoomedScreenshot}`}
+              alt="Screenshot"
+              style={{ width: "100%", height: "auto" }}
+            />
+          </Modal.Section>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+function groupTestsByName(
+  tests: InteractiveTestData[],
+  pageType: string,
+  path: string
+): GroupedFlowTest[] {
+  const grouped = new Map<string, GroupedFlowTest>();
+
+  for (const test of tests) {
+    if (!grouped.has(test.testName)) {
+      grouped.set(test.testName, {
+        testName: test.testName,
+        pageType,
+        path,
+        baseStatus: null,
+        candidateStatus: null,
+        baseSteps: [],
+        candidateSteps: [],
+      });
+    }
+
+    const group = grouped.get(test.testName)!;
+    if (test.variant === "base") {
+      group.baseStatus = test.status;
+      group.baseSteps = test.steps;
+    } else {
+      group.candidateStatus = test.status;
+      group.candidateSteps = test.steps;
+    }
+  }
+
+  return Array.from(grouped.values());
+}
+
+function formatTestName(testName: string): string {
+  return testName
+    .split("_")
+    .map(word => word.charAt(0) + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function formatAction(action: string): string {
+  return action
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function getStatusTone(status: string | null): "success" | "critical" | "warning" | "info" {
+  switch (status) {
+    case "passed":
+      return "success";
+    case "failed":
+    case "error":
+      return "critical";
+    case "partial":
+      return "warning";
+    default:
+      return "info";
+  }
 }
 
 // ── Error Boundary ──────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 # https://shopify.dev/docs/apps/tools/cli/configuration
 
 name = "ThemeDiff"
-client_id = "4b629de297f9e67fa0c6c0567dbe209c"
+client_id = "653aa08f3c8558e348a947c3b6295ad6"
 application_url = "https://your-tunnel.trycloudflare.com"
 embedded = true
 
