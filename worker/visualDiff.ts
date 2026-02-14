@@ -25,15 +25,6 @@ function padToSize(src: PNG, w: number, h: number): PNG {
   return padded;
 }
 
-/** Crop an image to target dimensions (top-left origin). */
-function cropToSize(src: PNG, w: number, h: number): PNG {
-  if (src.width === w && src.height === h) return src;
-
-  const cropped = new PNG({ width: w, height: h });
-  PNG.bitblt(src, cropped, 0, 0, w, h, 0, 0);
-  return cropped;
-}
-
 export async function generateVisualDiff(
   ctx: PipelineContext,
   pageTargetId: string,
@@ -57,7 +48,7 @@ export async function generateVisualDiff(
   const diffImage = new PNG({ width: fullWidth, height: fullHeight });
   const totalPixels = fullWidth * fullHeight;
 
-  pixelmatch(
+  const mismatchCount = pixelmatch(
     paddedBase.data,
     paddedCandidate.data,
     diffImage.data,
@@ -70,27 +61,8 @@ export async function generateVisualDiff(
   const diffBuffer = PNG.sync.write(diffImage);
   await storage.write(diffOutputPath, diffBuffer);
 
-  // ── Overlapping-region diff (for the accurate mismatch score) ──
-  // Crop both originals to the region they share so padding pixels
-  // don't inflate or dilute the score.
-  const overlapWidth = Math.min(baseImg.width, candidateImg.width);
-  const overlapHeight = Math.min(baseImg.height, candidateImg.height);
-  const effectivePixels = overlapWidth * overlapHeight;
-
-  const croppedBase = cropToSize(baseImg, overlapWidth, overlapHeight);
-  const croppedCandidate = cropToSize(candidateImg, overlapWidth, overlapHeight);
-
-  const mismatchCount = pixelmatch(
-    croppedBase.data,
-    croppedCandidate.data,
-    null, // don't need a diff output for the score
-    overlapWidth,
-    overlapHeight,
-    { threshold: 0.05, includeAA: true },
-  );
-
   const mismatchPercent =
-    effectivePixels > 0 ? (mismatchCount / effectivePixels) * 100 : 0;
+    totalPixels > 0 ? (mismatchCount / totalPixels) * 100 : 0;
 
   await ctx.prisma.visualDiff.create({
     data: {
@@ -99,7 +71,7 @@ export async function generateVisualDiff(
       mismatchCount,
       mismatchPercent: Math.round(mismatchPercent * 100) / 100,
       totalPixels,
-      effectivePixels,
+      effectivePixels: totalPixels,
     },
   });
 

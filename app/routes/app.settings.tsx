@@ -28,6 +28,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return json({
     storefrontPassword: settings?.storefrontPassword ?? "",
     hideSelectors: settings?.hideSelectors ?? "",
+    customUrls: settings?.customUrls ?? "",
   });
 };
 
@@ -40,6 +41,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const storefrontPassword = (formData.get("storefrontPassword") as string) || "";
   const hideSelectors = (formData.get("hideSelectors") as string) || "";
+  const customUrls = (formData.get("customUrls") as string) || "";
 
   await prisma.shopSetting.upsert({
     where: { shopDomain },
@@ -47,10 +49,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       shopDomain,
       storefrontPassword: storefrontPassword || null,
       hideSelectors: hideSelectors || null,
+      customUrls: customUrls || null,
     },
     update: {
       storefrontPassword: storefrontPassword || null,
       hideSelectors: hideSelectors || null,
+      customUrls: customUrls || null,
     },
   });
 
@@ -71,6 +75,9 @@ export default function SettingsPage() {
   const [hideSelectors, setHideSelectors] = useState(
     loaderData.hideSelectors,
   );
+  const [customUrls, setCustomUrls] = useState(
+    loaderData.customUrls,
+  );
 
   const isSaving = navigation.state === "submitting";
 
@@ -78,8 +85,9 @@ export default function SettingsPage() {
     const formData = new FormData();
     formData.set("storefrontPassword", storefrontPassword);
     formData.set("hideSelectors", hideSelectors);
+    formData.set("customUrls", customUrls);
     submit(formData, { method: "post" });
-  }, [storefrontPassword, hideSelectors, submit]);
+  }, [storefrontPassword, hideSelectors, customUrls, submit]);
 
   return (
     <Page title="Settings">
@@ -122,6 +130,24 @@ export default function SettingsPage() {
                 onChange={setHideSelectors}
                 multiline={4}
                 helpText="CSS selectors to hide during screenshots (one per line). Useful for hiding dynamic content like chat widgets or banners."
+                autoComplete="off"
+              />
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="400">
+              <Text as="h2" variant="headingMd">
+                Custom Pages
+              </Text>
+              <TextField
+                label="Custom URLs"
+                value={customUrls}
+                onChange={setCustomUrls}
+                multiline={4}
+                helpText="Additional pages to include in visual diffs (one path per line, e.g. /pages/about or /blogs/news)."
                 autoComplete="off"
               />
             </BlockStack>

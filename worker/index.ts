@@ -53,6 +53,22 @@ function sha256(content: string): string {
   return createHash("sha256").update(content, "utf-8").digest("hex");
 }
 
+class JobCancelledError extends Error {
+  constructor(diffRunId: string) {
+    super(`Job cancelled: DiffRun ${diffRunId} was deleted`);
+    this.name = "JobCancelledError";
+  }
+}
+
+/** Throws if the DiffRun no longer exists (i.e. user deleted it). */
+async function assertNotCancelled(diffRunId: string): Promise<void> {
+  const run = await prisma.diffRun.findUnique({
+    where: { id: diffRunId },
+    select: { id: true },
+  });
+  if (!run) throw new JobCancelledError(diffRunId);
+}
+
 // ── Types ────────────────────────────────────────────────────────────
 
 interface AssetListItem {
@@ -159,6 +175,7 @@ async function runAssetDiffs(
 
     if (i % 10 === 0) {
       console.log(`[worker] Progress: ${i}/${common.length} common assets compared`);
+      await assertNotCancelled(ctx.diffRunId);
     }
 
     const baseContent = baseAsset.value ?? "";
@@ -232,12 +249,7 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
     console.log("[worker] Phase 1: Asset diffs");
     const assetResult = await runAssetDiffs(ctx);
     console.log(`[worker] Asset diffs done: +${assetResult.added} -${assetResult.removed} ~${assetResult.modified}`);
-
-    // ── Phase 2: Page Target Resolution ──
-    console.log("[worker] Phase 2: Resolving page targets");
-    const targetDefs = await resolvePageTargets(ctx);
-    const targetIds = await createPageTargetRecords(ctx, targetDefs);
-    console.log(`[worker] Created ${targetIds.length} page targets`);
+    await assertNotCancelled(diffRunId);
 
     // Load shop settings
     const settings = await prisma.shopSetting.findUnique({
@@ -245,6 +257,13 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
     });
     const storefrontPassword = settings?.storefrontPassword ?? null;
     const hideSelectors = settings?.hideSelectors ?? null;
+    const customUrls = settings?.customUrls ?? null;
+
+    // ── Phase 2: Page Target Resolution ──
+    console.log("[worker] Phase 2: Resolving page targets");
+    const targetDefs = await resolvePageTargets(ctx, customUrls);
+    const targetIds = await createPageTargetRecords(ctx, targetDefs);
+    console.log(`[worker] Created ${targetIds.length} page targets`);
 
     const storage = createStorageProvider();
 
@@ -259,6 +278,7 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
       const pageTargetId = targetIds[i];
       const targetDef = targetDefs[i];
       console.log(`[worker] Target ${i + 1}/${targetIds.length}: ${targetDef.pageType} (${targetDef.path})`);
+      await assertNotCancelled(diffRunId);
 
       try {
         // a. Capture base screenshot (keep page open for checks)
@@ -349,8 +369,12 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
         `regressions: ${allRegressions.length}`,
     );
   } catch (err) {
-    console.error(`[worker] Diff failed: ${diffRunId}`, (err as Error).message);
     await closeBrowser();
+    if (err instanceof JobCancelledError) {
+      console.log(`[worker] Job cancelled: ${diffRunId}`);
+      return; // Row already deleted by the user — nothing to update
+    }
+    console.error(`[worker] Diff failed: ${diffRunId}`, (err as Error).message);
     await prisma.diffRun.update({
       where: { id: diffRunId },
       data: {

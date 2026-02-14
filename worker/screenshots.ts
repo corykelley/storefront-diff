@@ -4,6 +4,7 @@ import type { PipelineContext, StorageProvider } from "./types.js";
 const VIEWPORT = { width: 1440, height: 900 };
 const DEVICE_SCALE_FACTOR = 1;
 const FREEZE_CSS = `*, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; }`;
+const SHOPIFY_HIDE_CSS = `#preview-bar-iframe, #shopify-preview-bar, iframe[src*="preview-bar"] { display: none !important; height: 0 !important; }`;
 const DOM_SETTLE_MS = 1500;
 
 let browser: Browser | null = null;
@@ -64,8 +65,8 @@ export async function captureScreenshot(options: {
       }
     }
 
-    // Inject freeze CSS to stop animations
-    await page.addStyleTag({ content: FREEZE_CSS });
+    // Inject freeze CSS to stop animations + hide Shopify preview bar
+    await page.addStyleTag({ content: FREEZE_CSS + "\n" + SHOPIFY_HIDE_CSS });
 
     // Hide specified selectors
     if (hideSelectors) {

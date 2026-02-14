@@ -32,3 +32,33 @@ export async function enqueueDiffJob(diffRunId: string): Promise<void> {
     removeOnFail: 50,
   });
 }
+
+/**
+ * Remove any queued jobs for a given diffRunId.
+ * Active jobs will self-cancel when they detect the DiffRun row is gone.
+ * Returns true if a job was found (queued or active).
+ */
+export async function cancelDiffJob(diffRunId: string): Promise<boolean> {
+  const q = getDiffQueue();
+  let found = false;
+
+  // Remove waiting/delayed jobs
+  const waiting = await q.getJobs(["waiting", "delayed"]);
+  for (const job of waiting) {
+    if ((job.data as DiffJobData).diffRunId === diffRunId) {
+      await job.remove();
+      found = true;
+    }
+  }
+
+  // Check if there's an active job — it will self-cancel when
+  // it sees the DiffRun row has been deleted
+  const active = await q.getJobs(["active"]);
+  for (const job of active) {
+    if ((job.data as DiffJobData).diffRunId === diffRunId) {
+      found = true;
+    }
+  }
+
+  return found;
+}

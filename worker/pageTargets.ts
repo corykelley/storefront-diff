@@ -1,8 +1,21 @@
 import { shopifyFetch } from "./shopifyFetch.js";
 import type { PipelineContext, PageTargetDef } from "./types.js";
 
+export function parseCustomUrls(customUrls: string | null | undefined): PageTargetDef[] {
+  if (!customUrls) return [];
+  return customUrls
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && line.startsWith("/"))
+    .map((path) => ({
+      pageType: "custom-" + path.replace(/^\//, "").replace(/[^a-zA-Z0-9]+/g, "-").replace(/-$/, ""),
+      path,
+    }));
+}
+
 export async function resolvePageTargets(
   ctx: PipelineContext,
+  customUrls?: string | null,
 ): Promise<PageTargetDef[]> {
   const targets: PageTargetDef[] = [
     { pageType: "home", path: "/" },
@@ -63,6 +76,10 @@ export async function resolvePageTargets(
       (err as Error).message,
     );
   }
+
+  // Append custom URLs
+  const custom = parseCustomUrls(customUrls);
+  targets.push(...custom);
 
   return targets;
 }

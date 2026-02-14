@@ -25,7 +25,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { authenticate } from "~/shopify.server";
 import { notify } from "~/components/Notification";
 import { listThemes } from "~/lib/shopify-api.server";
-import { enqueueDiffJob } from "~/lib/queue.server";
+import { enqueueDiffJob, cancelDiffJob } from "~/lib/queue.server";
 import prisma from "~/db.server";
 
 // ── Loader: fetch themes ─────────────────────────────────────────────
@@ -64,7 +64,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // ── Delete run ──
   if (intent === "delete") {
     const runId = formData.get("runId") as string;
+    let jobCancelled = false;
     if (runId) {
+      // Cancel any queued/active BullMQ job for this run
+      jobCancelled = await cancelDiffJob(runId);
+
       // Clean up screenshot files on disk
       const { rm } = await import("node:fs/promises");
       const { join } = await import("node:path");
@@ -73,7 +77,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       await prisma.diffRun.delete({ where: { id: runId } });
     }
-    return json({ deleted: true });
+    return json({ deleted: true, jobCancelled });
   }
 
   // ── Create run ──
@@ -303,7 +307,11 @@ function RunRow({ run }: { run: any }) {
   // Show toast when delete succeeds
   useEffect(() => {
     if ((fetcher.data as any)?.deleted) {
-      notify("Run deleted");
+      if ((fetcher.data as any)?.jobCancelled) {
+        notify("Run cancelled and deleted", { tone: "info" });
+      } else {
+        notify("Run deleted");
+      }
     }
   }, [fetcher.data]);
 
