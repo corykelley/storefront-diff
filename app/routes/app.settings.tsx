@@ -8,12 +8,13 @@ import {
   Button,
   Card,
   Checkbox,
+  InlineStack,
   Layout,
   Page,
   Text,
   TextField,
 } from "@shopify/polaris";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { authenticate } from "~/shopify.server";
 import prisma from "~/db.server";
 
@@ -87,8 +88,33 @@ export default function SettingsPage() {
   const [interactiveTestsEnabled, setInteractiveTestsEnabled] = useState(
     loaderData.interactiveTestsEnabled,
   );
+  const [savedRecently, setSavedRecently] = useState(false);
 
   const isSaving = navigation.state === "submitting";
+  const wasSaving = navigation.state === "loading" && navigation.formData != null;
+
+  const isDirty =
+    storefrontPassword !== loaderData.storefrontPassword ||
+    hideSelectors !== loaderData.hideSelectors ||
+    customUrls !== loaderData.customUrls ||
+    interactiveTestsEnabled !== loaderData.interactiveTestsEnabled;
+
+  // Sync local state with loader data after a save completes
+  useEffect(() => {
+    setStorefrontPassword(loaderData.storefrontPassword);
+    setHideSelectors(loaderData.hideSelectors);
+    setCustomUrls(loaderData.customUrls);
+    setInteractiveTestsEnabled(loaderData.interactiveTestsEnabled);
+  }, [loaderData]);
+
+  // Show "Saved" feedback briefly after a successful save
+  useEffect(() => {
+    if (actionData?.success) {
+      setSavedRecently(true);
+      const timer = setTimeout(() => setSavedRecently(false), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [actionData]);
 
   const handleSave = useCallback(() => {
     const formData = new FormData();
@@ -103,14 +129,6 @@ export default function SettingsPage() {
     <Page title="Settings">
       <Box paddingBlockEnd="800">
         <Layout>
-        {actionData?.success && (
-          <Layout.Section>
-            <Banner tone="success" onDismiss={() => {}}>
-              Settings saved successfully.
-            </Banner>
-          </Layout.Section>
-        )}
-
         <Layout.Section>
           <Card>
             <BlockStack gap="400">
@@ -182,9 +200,34 @@ export default function SettingsPage() {
         </Layout.Section>
 
         <Layout.Section>
-          <Button variant="primary" onClick={handleSave} loading={isSaving}>
-            Save
-          </Button>
+          <InlineStack gap="300" blockAlign="center">
+            <Button
+              variant="primary"
+              onClick={handleSave}
+              loading={isSaving}
+              disabled={!isDirty && !isSaving}
+            >
+              Save
+            </Button>
+            {savedRecently && !isDirty && (
+              <Text as="span" tone="success" variant="bodySm">
+                Settings saved
+              </Text>
+            )}
+          </InlineStack>
+        </Layout.Section>
+
+        <Layout.Section>
+          <Banner tone="info">
+            <p>
+              <strong>Tip:</strong> If cookie consent banners, chat widgets, or
+              other popups are interfering with screenshots or interactive tests,
+              add their CSS selectors to the <strong>Hide selectors</strong>{" "}
+              field above (e.g.{" "}
+              <code>#shopify-pc__banner</code>,{" "}
+              <code>.cookie-consent</code>).
+            </p>
+          </Banner>
         </Layout.Section>
       </Layout>
       </Box>

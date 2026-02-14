@@ -245,73 +245,97 @@ const INTERACTIVE_TEST_DEFINITIONS: InteractiveTestDefinition[] = [
 // ── Helper Functions ─────────────────────────────────────────────────
 
 /**
- * Dismiss common overlays and modals that might block interactions
+ * Dismiss common overlays and modals that might block interactions.
+ *
+ * Uses a two-phase approach:
+ *   1. JS removal: nuke known overlay containers from the DOM entirely
+ *   2. Click fallback: try clicking dismiss/accept buttons on anything left
  */
 async function dismissOverlays(page: Page): Promise<void> {
   console.log('[interactive] Dismissing overlays...');
 
-  // Common overlay dismiss button patterns
-  const dismissSelectors = [
-    // Cookie consent
+  // ── Phase 1: Remove overlay containers via JS ──────────────────────
+  // This is the most reliable approach — removes the element entirely so
+  // it can never re-appear or intercept clicks.
+  const removed = await page.evaluate(() => {
+    const selectors = [
+      // Shopify native cookie consent
+      '#shopify-pc__banner',
+      '#shopify-pc__modal',
+      '#shopify-privacy-banner',
+      '.shopify-privacy-banner',
+      '[id*="CookieConsent"]',
+      '[class*="cookie-consent"]',
+      '[class*="cookie-banner"]',
+      '[class*="cookie_consent"]',
+      '[id*="cookie-consent"]',
+      '[id*="cookie-banner"]',
+      '[data-cookie-consent]',
+      '[data-consent]',
+      // Generic cookie / GDPR popups
+      '#onetrust-consent-sdk',
+      '#CybotCookiebotDialog',
+      '.cc-window',
+      '#gdpr-consent',
+      // Newsletter / promo modals
+      '[data-popup-modal]',
+      '.popup-modal__overlay',
+      '.newsletter-popup',
+      // Age gate
+      '[data-age-gate]',
+    ];
+
+    let count = 0;
+    for (const sel of selectors) {
+      document.querySelectorAll(sel).forEach(el => { el.remove(); count++; });
+    }
+    return count;
+  });
+
+  if (removed > 0) {
+    console.log(`[interactive] Removed ${removed} overlay element(s) via JS`);
+  }
+
+  // ── Phase 2: Click dismiss buttons on any remaining overlays ───────
+  const clickSelectors = [
     'button:has-text("Accept")',
     'button:has-text("Accept all")',
     'button:has-text("Accept All")',
-    'button:has-text("Agree")',
     'button:has-text("Decline")',
     'button:has-text("Close")',
-    '[data-cookie-consent] button',
-    '[data-consent] button',
-    '.cookie-banner button',
-    '.cookie-consent button',
-    '#cookie-consent button',
-
-    // Newsletter popups
+    'button:has-text("Agree")',
+    'button[aria-label*="Close" i]',
+    'button[aria-label*="Dismiss" i]',
     '[data-modal-close]',
     '[data-close-modal]',
     '.modal__close',
     '.popup__close',
-    'button[aria-label*="Close" i]',
-    'button[aria-label*="Dismiss" i]',
-
-    // Generic close buttons
-    'button.close',
-    'button[class*="close"]',
     '[role="dialog"] button',
-    '[data-dismiss]',
-
-    // X buttons
-    'button:has-text("×")',
-    'button:has-text("✕")',
   ];
 
-  // Try to dismiss overlays (non-blocking, max 3 attempts)
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     let dismissed = false;
 
-    for (const selector of dismissSelectors) {
+    for (const selector of clickSelectors) {
       try {
         const button = await page.waitForSelector(selector, {
           state: "visible",
-          timeout: 500,
+          timeout: 400,
         });
 
         if (button) {
           await button.click();
-          await page.waitForTimeout(300); // Wait for animation
-          console.log(`[interactive] Dismissed overlay using: ${selector}`);
+          await page.waitForTimeout(300);
+          console.log(`[interactive] Dismissed overlay via click: ${selector}`);
           dismissed = true;
-          break; // Try next overlay after this one
+          break;
         }
       } catch {
-        // Selector didn't match, try next one
         continue;
       }
     }
 
-    if (!dismissed) {
-      // No more overlays found
-      break;
-    }
+    if (!dismissed) break;
   }
 
   console.log('[interactive] Overlay dismissal complete');

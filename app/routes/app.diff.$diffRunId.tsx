@@ -150,10 +150,10 @@ export default function DiffRunPage() {
 
               {diffRun.status === "complete" && (
                 <InlineStack gap="400" wrap>
-                  <SummaryChip label="Added" count={summary.added || 0} tone="success" />
-                  <SummaryChip label="Removed" count={summary.removed || 0} tone="critical" />
-                  <SummaryChip label="Modified" count={summary.modified || 0} tone="caution" />
-                  <SummaryChip label="Skipped" count={summary.skipped || 0} tone="subdued" />
+                  <SummaryChip label="Files Added" count={summary.added || 0} tone="success" />
+                  <SummaryChip label="Files Removed" count={summary.removed || 0} tone="critical" />
+                  <SummaryChip label="Files Modified" count={summary.modified || 0} tone="caution" />
+                  <SummaryChip label="Files Skipped" count={summary.skipped || 0} tone="subdued" />
                   {summary.pageTargets > 0 && (
                     <>
                       <SummaryChip label="Pages" count={summary.pageTargets} tone="info" />
@@ -505,15 +505,26 @@ function DiffGroup({
   diffs: AssetDiffRow[];
   showDiff?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+
   return (
     <BlockStack gap="300">
-      <Text as="h2" variant="headingMd">
-        {title}
-      </Text>
+      <InlineStack align="space-between" blockAlign="center">
+        <Text as="h2" variant="headingMd">
+          {title}
+        </Text>
+        <Button variant="plain" onClick={() => setOpen(!open)}>
+          {open ? "Collapse" : "Expand"}
+        </Button>
+      </InlineStack>
       <Divider />
-      {diffs.map((diff) => (
-        <DiffFileRow key={diff.id} diff={diff} showDiff={showDiff} />
-      ))}
+      <Collapsible open={open} id={`group-${title}`}>
+        <BlockStack gap="200">
+          {diffs.map((diff) => (
+            <DiffFileRow key={diff.id} diff={diff} showDiff={showDiff} />
+          ))}
+        </BlockStack>
+      </Collapsible>
     </BlockStack>
   );
 }
