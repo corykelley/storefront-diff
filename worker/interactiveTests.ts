@@ -221,17 +221,45 @@ const INTERACTIVE_TEST_DEFINITIONS: InteractiveTestDefinition[] = [
         customVerification: async (page) => {
           // Check for common mobile menu patterns
           const visible = await page.evaluate(() => {
+            // ── Exact selector matches ──
             const selectors = [
               '[data-mobile-menu].open',
               '[data-mobile-menu].active',
               '.mobile-menu.open',
               '.mobile-menu.active',
               'nav[aria-hidden="false"]',
+              // Dawn theme: menu-drawer is a <details> element that gets [open]
+              'details#menu-drawer-container[open]',
+              'menu-drawer[open]',
+              'menu-drawer details[open]',
+              '#menu-drawer[open]',
+              'details[id*="menu"][open]',
+              // Generic drawer patterns
+              '.menu-drawer.is-open',
+              '.mobile-nav.is-active',
+              '[data-menu-drawer][open]',
+              '[data-mobile-nav].is-open',
             ];
-            return selectors.some(sel => {
+
+            const selectorMatch = selectors.some(sel => {
               const el = document.querySelector(sel);
               return el && window.getComputedStyle(el).display !== 'none';
             });
+            if (selectorMatch) return true;
+
+            // ── Heuristic: look for visible nav links inside any open
+            //    details element or drawer-like container ──
+            const navInDrawer = document.querySelectorAll(
+              'details[open] nav a, [class*="menu-drawer"] nav a, [class*="mobile-menu"] a'
+            );
+            for (const link of navInDrawer) {
+              const style = window.getComputedStyle(link);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                return true;
+              }
+            }
+
+            return false;
           });
           return visible;
         },
