@@ -14,11 +14,18 @@ import { createHash } from "node:crypto";
 import { createTwoFilesPatch } from "diff";
 
 import { shopifyFetch, sleep } from "./shopifyFetch.js";
-import { resolvePageTargets, buildPreviewUrl, createPageTargetRecords } from "./pageTargets.js";
+import {
+  resolvePageTargets,
+  buildPreviewUrl,
+  createPageTargetRecords,
+} from "./pageTargets.js";
 import { capturePageTargetScreenshots, closeBrowser } from "./screenshots.js";
 import { generateVisualDiff } from "./visualDiff.js";
 import { runChecksOnPage, persistCheckResults } from "./checks.js";
-import { runInteractiveTestsOnPage, persistInteractiveTestResults } from "./interactiveTests.js";
+import {
+  runInteractiveTestsOnPage,
+  persistInteractiveTestResults,
+} from "./interactiveTests.js";
 import { createStorageProvider } from "./storage.js";
 import type { PipelineContext } from "./types.js";
 
@@ -29,9 +36,24 @@ const MAX_ASSET_SIZE = 500 * 1024; // 500 KB
 const THROTTLE_MS = 550; // ~2 requests/sec to stay under Shopify REST rate limit
 
 const BINARY_EXTENSIONS = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
-  ".woff", ".woff2", ".ttf", ".eot", ".otf",
-  ".mp4", ".webm", ".pdf", ".mp3", ".ogg", ".zip", ".gz",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".ico",
+  ".webp",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".eot",
+  ".otf",
+  ".mp4",
+  ".webm",
+  ".pdf",
+  ".mp3",
+  ".ogg",
+  ".zip",
+  ".gz",
 ]);
 
 // ── Prisma client ────────────────────────────────────────────────────
@@ -88,7 +110,12 @@ interface AssetDetail {
 
 async function runAssetDiffs(
   ctx: PipelineContext,
-): Promise<{ added: number; removed: number; modified: number; skipped: number }> {
+): Promise<{
+  added: number;
+  removed: number;
+  modified: number;
+  skipped: number;
+}> {
   const [baseAssets, candidateAssets] = await Promise.all([
     shopifyFetch<{ assets: AssetListItem[] }>(
       ctx.shopDomain,
@@ -125,10 +152,20 @@ async function runAssetDiffs(
   }> = [];
 
   for (const key of added) {
-    diffRows.push({ diffRunId: ctx.diffRunId, key, changeType: "added", diffText: null });
+    diffRows.push({
+      diffRunId: ctx.diffRunId,
+      key,
+      changeType: "added",
+      diffText: null,
+    });
   }
   for (const key of removed) {
-    diffRows.push({ diffRunId: ctx.diffRunId, key, changeType: "removed", diffText: null });
+    diffRows.push({
+      diffRunId: ctx.diffRunId,
+      key,
+      changeType: "removed",
+      diffText: null,
+    });
   }
 
   let modifiedCount = 0;
@@ -138,7 +175,12 @@ async function runAssetDiffs(
     const key = common[i];
 
     if (isBinary(key)) {
-      diffRows.push({ diffRunId: ctx.diffRunId, key, changeType: "binary-skipped", diffText: null });
+      diffRows.push({
+        diffRunId: ctx.diffRunId,
+        key,
+        changeType: "binary-skipped",
+        diffText: null,
+      });
       skippedCount++;
       continue;
     }
@@ -150,7 +192,9 @@ async function runAssetDiffs(
       baseAsset = await shopifyFetch<{ asset: AssetDetail }>(
         ctx.shopDomain,
         ctx.accessToken,
-        `themes/${ctx.baseThemeId}/assets.json?asset[key]=${encodeURIComponent(key)}`,
+        `themes/${ctx.baseThemeId}/assets.json?asset[key]=${encodeURIComponent(
+          key,
+        )}`,
       ).then((r) => r.asset);
 
       await sleep(THROTTLE_MS);
@@ -158,12 +202,17 @@ async function runAssetDiffs(
       candidateAsset = await shopifyFetch<{ asset: AssetDetail }>(
         ctx.shopDomain,
         ctx.accessToken,
-        `themes/${ctx.candidateThemeId}/assets.json?asset[key]=${encodeURIComponent(key)}`,
+        `themes/${
+          ctx.candidateThemeId
+        }/assets.json?asset[key]=${encodeURIComponent(key)}`,
       ).then((r) => r.asset);
 
       await sleep(THROTTLE_MS);
     } catch (err) {
-      console.error(`[worker] Failed to fetch asset ${key}:`, (err as Error).message);
+      console.error(
+        `[worker] Failed to fetch asset ${key}:`,
+        (err as Error).message,
+      );
       diffRows.push({
         diffRunId: ctx.diffRunId,
         key,
@@ -175,7 +224,9 @@ async function runAssetDiffs(
     }
 
     if (i % 10 === 0) {
-      console.log(`[worker] Progress: ${i}/${common.length} common assets compared`);
+      console.log(
+        `[worker] Progress: ${i}/${common.length} common assets compared`,
+      );
       await assertNotCancelled(ctx.diffRunId);
     }
 
@@ -186,7 +237,12 @@ async function runAssetDiffs(
       Buffer.byteLength(baseContent, "utf-8") > MAX_ASSET_SIZE ||
       Buffer.byteLength(candidateContent, "utf-8") > MAX_ASSET_SIZE
     ) {
-      diffRows.push({ diffRunId: ctx.diffRunId, key, changeType: "large-file-skipped", diffText: null });
+      diffRows.push({
+        diffRunId: ctx.diffRunId,
+        key,
+        changeType: "large-file-skipped",
+        diffText: null,
+      });
       skippedCount++;
       continue;
     }
@@ -206,7 +262,12 @@ async function runAssetDiffs(
       { context: 3 },
     );
 
-    diffRows.push({ diffRunId: ctx.diffRunId, key, changeType: "modified", diffText: patch });
+    diffRows.push({
+      diffRunId: ctx.diffRunId,
+      key,
+      changeType: "modified",
+      diffText: patch,
+    });
     modifiedCount++;
   }
 
@@ -214,7 +275,12 @@ async function runAssetDiffs(
     await ctx.prisma.assetDiff.createMany({ data: diffRows });
   }
 
-  return { added: added.length, removed: removed.length, modified: modifiedCount, skipped: skippedCount };
+  return {
+    added: added.length,
+    removed: removed.length,
+    modified: modifiedCount,
+    skipped: skippedCount,
+  };
 }
 
 // ── Main job processor ───────────────────────────────────────────────
@@ -229,7 +295,10 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
   const shop = await prisma.shop.findUnique({
     where: { shopDomain: diffRun.shopDomain },
   });
-  if (!shop) throw new Error(`Shop ${diffRun.shopDomain} not found — has the app been installed?`);
+  if (!shop)
+    throw new Error(
+      `Shop ${diffRun.shopDomain} not found — has the app been installed?`,
+    );
 
   await prisma.diffRun.update({
     where: { id: diffRunId },
@@ -249,7 +318,9 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
     // ── Phase 1: Asset Diffs ──
     console.log("[worker] Phase 1: Asset diffs");
     const assetResult = await runAssetDiffs(ctx);
-    console.log(`[worker] Asset diffs done: +${assetResult.added} -${assetResult.removed} ~${assetResult.modified}`);
+    console.log(
+      `[worker] Asset diffs done: +${assetResult.added} -${assetResult.removed} ~${assetResult.modified}`,
+    );
     await assertNotCancelled(diffRunId);
 
     // Load shop settings
@@ -259,6 +330,7 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
     const storefrontPassword = settings?.storefrontPassword ?? null;
     const hideSelectors = settings?.hideSelectors ?? null;
     const customUrls = settings?.customUrls ?? null;
+    const navSelector = settings?.navSelector ?? null;
 
     // ── Phase 2: Page Target Resolution ──
     console.log("[worker] Phase 2: Resolving page targets");
@@ -274,25 +346,45 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
     let screenshotsFailed = 0;
     let maxMismatchPercent = 0;
     const allRegressions: Array<{ checkName: string; pageType: string }> = [];
-    const allInteractiveRegressions: Array<{ testName: string; pageType: string }> = [];
+    const allInteractiveRegressions: Array<{
+      testName: string;
+      pageType: string;
+    }> = [];
     let interactiveTestCount = 0;
 
     for (let i = 0; i < targetIds.length; i++) {
       const pageTargetId = targetIds[i];
       const targetDef = targetDefs[i];
-      console.log(`[worker] Target ${i + 1}/${targetIds.length}: ${targetDef.pageType} (${targetDef.path})`);
+      console.log(
+        `[worker] Target ${i + 1}/${targetIds.length}: ${targetDef.pageType} (${
+          targetDef.path
+        })`,
+      );
       await assertNotCancelled(diffRunId);
 
       try {
         // a. Capture base screenshot (keep page open for checks)
-        const baseUrl = buildPreviewUrl(ctx.shopDomain, ctx.baseThemeId, targetDef.path);
+        const baseUrl = buildPreviewUrl(
+          ctx.shopDomain,
+          ctx.baseThemeId,
+          targetDef.path,
+        );
         const baseResult = await capturePageTargetScreenshots(
-          ctx, pageTargetId, "base", baseUrl, targetDef.pageType,
-          storefrontPassword, hideSelectors, storage,
+          ctx,
+          pageTargetId,
+          "base",
+          baseUrl,
+          targetDef.pageType,
+          storefrontPassword,
+          hideSelectors,
+          storage,
         );
 
         // b. Run DOM checks on base page
-        const baseChecks = await runChecksOnPage(baseResult.page, targetDef.pageType);
+        const baseChecks = await runChecksOnPage(
+          baseResult.page,
+          targetDef.pageType,
+        );
 
         // c. Run interactive tests on base page (if enabled)
         let baseTestOutcomes: any[] = [];
@@ -302,21 +394,35 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
             targetDef.pageType,
             "base",
             ctx,
-            storage
+            storage,
+            navSelector,
           );
         }
 
         await baseResult.context.close();
 
         // d. Capture candidate screenshot (keep page open for checks)
-        const candidateUrl = buildPreviewUrl(ctx.shopDomain, ctx.candidateThemeId, targetDef.path);
+        const candidateUrl = buildPreviewUrl(
+          ctx.shopDomain,
+          ctx.candidateThemeId,
+          targetDef.path,
+        );
         const candidateResult = await capturePageTargetScreenshots(
-          ctx, pageTargetId, "candidate", candidateUrl, targetDef.pageType,
-          storefrontPassword, hideSelectors, storage,
+          ctx,
+          pageTargetId,
+          "candidate",
+          candidateUrl,
+          targetDef.pageType,
+          storefrontPassword,
+          hideSelectors,
+          storage,
         );
 
         // e. Run DOM checks on candidate page
-        const candidateChecks = await runChecksOnPage(candidateResult.page, targetDef.pageType);
+        const candidateChecks = await runChecksOnPage(
+          candidateResult.page,
+          targetDef.pageType,
+        );
 
         // f. Run interactive tests on candidate page (if enabled)
         let candidateTestOutcomes: any[] = [];
@@ -326,7 +432,8 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
             targetDef.pageType,
             "candidate",
             ctx,
-            storage
+            storage,
+            navSelector,
           );
         }
 
@@ -336,7 +443,12 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
         const basePath = `runs/${ctx.diffRunId}/base-${targetDef.pageType}.png`;
         const candidatePath = `runs/${ctx.diffRunId}/candidate-${targetDef.pageType}.png`;
         const diffResult = await generateVisualDiff(
-          ctx, pageTargetId, targetDef.pageType, basePath, candidatePath, storage,
+          ctx,
+          pageTargetId,
+          targetDef.pageType,
+          basePath,
+          candidatePath,
+          storage,
         );
 
         if (diffResult.mismatchPercent > maxMismatchPercent) {
@@ -344,16 +456,24 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
         }
 
         // h. Persist check results
-        const checkResult = await persistCheckResults(ctx, pageTargetId, baseChecks, candidateChecks);
+        const checkResult = await persistCheckResults(
+          ctx,
+          pageTargetId,
+          baseChecks,
+          candidateChecks,
+        );
         allRegressions.push(...checkResult.regressions);
 
         // i. Persist interactive test results (if enabled)
-        if (settings?.interactiveTestsEnabled && (baseTestOutcomes.length > 0 || candidateTestOutcomes.length > 0)) {
+        if (
+          settings?.interactiveTestsEnabled &&
+          (baseTestOutcomes.length > 0 || candidateTestOutcomes.length > 0)
+        ) {
           const testResult = await persistInteractiveTestResults(
             ctx,
             pageTargetId,
             baseTestOutcomes,
-            candidateTestOutcomes
+            candidateTestOutcomes,
           );
           allInteractiveRegressions.push(...testResult.regressions);
           interactiveTestCount += baseTestOutcomes.length;
@@ -366,7 +486,10 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
         });
         screenshotsComplete++;
       } catch (err) {
-        console.error(`[worker] Target ${targetDef.pageType} failed:`, (err as Error).message);
+        console.error(
+          `[worker] Target ${targetDef.pageType} failed:`,
+          (err as Error).message,
+        );
         await ctx.prisma.pageTarget.update({
           where: { id: pageTargetId },
           data: {
@@ -382,7 +505,8 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
     console.log("[worker] Phase 4: Finalizing");
     await closeBrowser();
 
-    const allTargetsFailed = targetIds.length > 0 && screenshotsFailed === targetIds.length;
+    const allTargetsFailed =
+      targetIds.length > 0 && screenshotsFailed === targetIds.length;
 
     const summary = {
       ...assetResult,
@@ -393,7 +517,10 @@ async function processDiffJob(job: Job<{ diffRunId: string }>) {
       riskCount: allRegressions.length + allInteractiveRegressions.length,
       regressions: [
         ...allRegressions,
-        ...allInteractiveRegressions.map(r => ({ type: "interactive", ...r })),
+        ...allInteractiveRegressions.map((r) => ({
+          type: "interactive",
+          ...r,
+        })),
       ],
       interactiveTestsRun: settings?.interactiveTestsEnabled ?? false,
       interactiveTestCount,

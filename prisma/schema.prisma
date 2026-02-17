@@ -37,17 +37,17 @@ model Shop {
 
 // ── DiffRun ──
 model DiffRun {
-  id                 String      @id @default(cuid())
+  id                 String       @id @default(cuid())
   shopDomain         String
   baseThemeId        BigInt
   baseThemeName      String
   candidateThemeId   BigInt
   candidateThemeName String
-  status             String      @default("queued") // queued | running | complete | failed
-  summary            Json?       // { added: N, removed: N, modified: N, skipped: N }
+  status             String       @default("queued") // queued | running | complete | failed
+  summary            Json? // { added: N, removed: N, modified: N, skipped: N }
   errorMessage       String?
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
   assetDiffs         AssetDiff[]
   pageTargets        PageTarget[]
 }
@@ -57,8 +57,9 @@ model ShopSetting {
   id                      String   @id @default(cuid())
   shopDomain              String   @unique
   storefrontPassword      String?
-  hideSelectors           String?  @db.Text  // newline-separated CSS selectors
-  customUrls              String?  @db.Text  // newline-separated paths (e.g. /pages/about)
+  hideSelectors           String?  @db.Text // newline-separated CSS selectors
+  customUrls              String?  @db.Text // newline-separated paths (e.g. /pages/about)
+  navSelector             String?  @db.Text
   interactiveTestsEnabled Boolean  @default(false)
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
@@ -69,16 +70,17 @@ model PageTarget {
   id               String            @id @default(cuid())
   diffRunId        String
   diffRun          DiffRun           @relation(fields: [diffRunId], references: [id], onDelete: Cascade)
-  pageType         String            // "home" | "product" | "collection" | "cart"
-  path             String            // e.g. "/" or "/products/some-handle"
-  handle           String?           // resolved handle for product/collection
-  status           String            @default("pending")  // pending | complete | failed
+  pageType         String // "home" | "product" | "collection" | "cart"
+  path             String // e.g. "/" or "/products/some-handle"
+  handle           String? // resolved handle for product/collection
+  status           String            @default("pending") // pending | complete | failed
   errorMessage     String?
   createdAt        DateTime          @default(now())
   screenshots      Screenshot[]
   visualDiffs      VisualDiff[]
   checkResults     CheckResult[]
   interactiveTests InteractiveTest[]
+
   @@index([diffRunId])
 }
 
@@ -87,11 +89,12 @@ model Screenshot {
   id           String     @id @default(cuid())
   pageTargetId String
   pageTarget   PageTarget @relation(fields: [pageTargetId], references: [id], onDelete: Cascade)
-  variant      String     // "base" | "candidate"
-  filePath     String     // relative to public/, e.g. "runs/{id}/base-home.png"
+  variant      String // "base" | "candidate"
+  filePath     String // relative to public/, e.g. "runs/{id}/base-home.png"
   width        Int
   height       Int
   createdAt    DateTime   @default(now())
+
   @@index([pageTargetId])
 }
 
@@ -102,8 +105,8 @@ model VisualDiff {
   pageTarget      PageTarget @relation(fields: [pageTargetId], references: [id], onDelete: Cascade)
   diffFilePath    String
   mismatchCount   Int
-  mismatchPercent Float      // 0.0–100.0
-  totalPixels     Int        // full padded canvas pixels
+  mismatchPercent Float // 0.0–100.0
+  totalPixels     Int // full padded canvas pixels
   effectivePixels Int        @default(0) // overlapping region pixels (used as denominator)
   createdAt       DateTime   @default(now())
 }
@@ -113,12 +116,13 @@ model CheckResult {
   id           String     @id @default(cuid())
   pageTargetId String
   pageTarget   PageTarget @relation(fields: [pageTargetId], references: [id], onDelete: Cascade)
-  checkName    String     // e.g. "PDP_ATC_PRESENT"
-  variant      String     // "base" | "candidate"
+  checkName    String // e.g. "PDP_ATC_PRESENT"
+  variant      String // "base" | "candidate"
   passed       Boolean
   selector     String
   detail       String?
   createdAt    DateTime   @default(now())
+
   @@index([pageTargetId])
 }
 
@@ -127,8 +131,8 @@ model AssetDiff {
   id         String   @id @default(cuid())
   diffRunId  String
   diffRun    DiffRun  @relation(fields: [diffRunId], references: [id], onDelete: Cascade)
-  key        String   // e.g. "templates/index.liquid"
-  changeType String   // added | removed | modified | large-file-skipped | binary-skipped
+  key        String // e.g. "templates/index.liquid"
+  changeType String // added | removed | modified | large-file-skipped | binary-skipped
   diffText   String?  @db.Text
   createdAt  DateTime @default(now())
 
@@ -140,9 +144,9 @@ model InteractiveTest {
   id             String            @id @default(cuid())
   pageTargetId   String
   pageTarget     PageTarget        @relation(fields: [pageTargetId], references: [id], onDelete: Cascade)
-  testName       String            // "BUY_FLOW" | "NAVIGATION_SEARCH" | "MOBILE_MENU"
-  variant        String            // "base" | "candidate"
-  status         String            // "passed" | "failed" | "error" | "partial"
+  testName       String // "BUY_FLOW" | "NAVIGATION_SEARCH" | "MOBILE_MENU"
+  variant        String // "base" | "candidate"
+  status         String // "passed" | "failed" | "error" | "partial"
   steps          InteractiveStep[]
   errorMessage   String?
   totalSteps     Int
@@ -158,8 +162,8 @@ model InteractiveStep {
   interactiveTestId String
   interactiveTest   InteractiveTest @relation(fields: [interactiveTestId], references: [id], onDelete: Cascade)
   stepNumber        Int
-  action            String          // e.g., "click_atc", "verify_cart_count"
-  status            String          // "success" | "failed" | "skipped"
+  action            String // e.g., "click_atc", "verify_cart_count"
+  status            String // "success" | "failed" | "skipped"
   selector          String?
   screenshotPath    String?
   errorDetail       String?         @db.Text

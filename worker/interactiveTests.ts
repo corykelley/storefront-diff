@@ -110,12 +110,14 @@ const SELECTOR_LISTS = {
     'button:has-text("Menu")',
   ],
 
-  NAV_LINK: [
-    'nav a[href*="/collections/"]',
-    'header nav a[href*="/collections/"]',
+  NAV_ITEMS: [
+    'nav li a',
+    'header nav li a',
+    'nav a',
+    'header nav a',
+    '.header__menu li a',
     '.header__menu a',
     '[data-nav-link]',
-    'nav a:not([href="/"])',
   ],
 };
 
@@ -163,20 +165,11 @@ const INTERACTIVE_TEST_DEFINITIONS: InteractiveTestDefinition[] = [
     pageTypes: ["home"],
     steps: [
       {
-        action: "click_nav_link",
-        selectorList: SELECTOR_LISTS.NAV_LINK,
+        action: "verify_nav_items",
+        customVerification: createNavItemsVerifier(SELECTOR_LISTS.NAV_ITEMS),
         required: true,
-        description: "Click navigation link",
-        waitAfter: 2000,
-      },
-      {
-        action: "verify_collection_page",
-        customVerification: async (page) => {
-          const url = page.url();
-          return url.includes('/collections/') || url.includes('/pages/');
-        },
-        required: true,
-        description: "Verify navigation to collection or page",
+        description: "Verify all navigation items lead to valid pages",
+        waitAfter: 1000,
       },
       {
         action: "find_search",
@@ -424,6 +417,87 @@ async function verifyCartUpdated(page: Page): Promise<boolean> {
   return false;
 }
 
+/**
+ * Verify navigation items all lead to valid (non-404) pages
+ */
+function createNavItemsVerifier(selectors: string[]) {
+  return async (page: Page): Promise<boolean> => {
+    const originalUrl = page.url();
+
+    // Find all nav items
+    const navItems = await page.evaluate((selectorList) => {
+      for (const selector of selectorList) {
+        const items = Array.from(document.querySelectorAll(selector));
+        // Filter out items without href or with just #
+        const validItems = items.filter(item => {
+          const href = (item as HTMLAnchorElement).href;
+          return href && !href.endsWith('#') && href.includes(window.location.origin);
+        });
+
+        if (validItems.length > 0) {
+          return validItems.map(item => ({
+            href: (item as HTMLAnchorElement).href,
+            text: item.textContent?.trim() || '',
+          }));
+        }
+      }
+      return null;
+    }, selectors);
+
+    if (!navItems || navItems.length === 0) {
+      console.error('[interactive] Could not find any nav items using selectors:', selectors);
+      return false;
+    }
+
+    console.log(`[interactive] Found ${navItems.length} nav items to verify`);
+
+    // Check each nav item (limit to first 5 to avoid excessive testing)
+    const itemsToCheck = navItems.slice(0, 5);
+    let validCount = 0;
+
+    for (const item of itemsToCheck) {
+      try {
+        console.log(`[interactive] Checking nav item: "${item.text}" -> ${item.href}`);
+
+        // Navigate to the link
+        await page.goto(item.href, { waitUntil: 'domcontentloaded', timeout: 10000 });
+        await page.waitForTimeout(1000);
+
+        // Check if we got a 404
+        const is404 = await page.evaluate(() => {
+          // Check for common 404 indicators
+          const title = document.title.toLowerCase();
+          const bodyText = document.body.textContent?.toLowerCase() || '';
+
+          return title.includes('404') ||
+                 title.includes('not found') ||
+                 bodyText.includes('page not found') ||
+                 bodyText.includes('404');
+        });
+
+        if (!is404) {
+          console.log(`[interactive] ✓ Valid: "${item.text}"`);
+          validCount++;
+        } else {
+          console.error(`[interactive] ✗ 404: "${item.text}" -> ${item.href}`);
+        }
+
+        // Go back to original page
+        await page.goto(originalUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+        await page.waitForTimeout(500);
+
+      } catch (error) {
+        console.error(`[interactive] Error checking nav item "${item.text}":`, error);
+      }
+    }
+
+    console.log(`[interactive] Nav verification: ${validCount}/${itemsToCheck.length} items valid`);
+
+    // Consider it successful if at least half the items are valid
+    return validCount >= Math.ceil(itemsToCheck.length / 2);
+  };
+}
+
 // ── Step Execution ───────────────────────────────────────────────────
 
 async function executeStep(
@@ -570,13 +644,26 @@ export async function runInteractiveTestsOnPage(
   variant: "base" | "candidate",
   ctx: PipelineContext,
   storage: StorageProvider,
+  navSelector?: string | null,
 ): Promise<InteractiveTestOutcome[]> {
   const outcomes: InteractiveTestOutcome[] = [];
 
   // Find tests for this page type
-  const applicableTests = INTERACTIVE_TEST_DEFINITIONS.filter(test =>
+  let applicableTests = INTERACTIVE_TEST_DEFINITIONS.filter(test =>
     test.pageTypes.includes(pageType)
   );
+
+  // If a custom nav selector is provided, override nav verification
+  if (navSelector) {
+    applicableTests = applicableTests.map(test => ({
+      ...test,
+      steps: test.steps.map(step =>
+        step.action === 'verify_nav_items'
+          ? { ...step, customVerification: createNavItemsVerifier([navSelector, ...SELECTOR_LISTS.NAV_ITEMS]) }
+          : step
+      ),
+    }));
+  }
 
   if (applicableTests.length === 0) {
     return outcomes;
